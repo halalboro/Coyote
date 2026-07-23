@@ -169,6 +169,15 @@ set(FPLAN_PATH 0 CACHE STRING "Path to vFPGA floorplan; only applicable if EN_PR
 # Number of clock cycles after which the loaded app is considered valid (due to the ICAP done signal being lost if crossing SLR regions on the U55C)
 set(EOS_TIME 1000000 CACHE STRING "End of startup time.")
 
+# Enable inter-vFPGA AXI-Stream ring
+# When EN_P2P=1 and N_REGIONS>1, each vFPGA exposes axis_p2p_send (master) and
+# axis_p2p_recv (slave) ports at AXI_DATA_BITS wide. In dynamic_top these are
+# wired in a ring: wrapper[i].axis_p2p_send -> wrapper[(i+1) mod N].axis_p2p_recv.
+# Provides zero-DRAM inter-vFPGA data movement for pipelined multi-vFPGA
+# workloads. On Versal, the ring wires cross SLR boundaries via SLLs.
+# Future: replace ring with hardened NoC AXIS mesh (needs static rebuild).
+set(EN_P2P 0 CACHE STRING "Enable inter-vFPGA AXI-Stream ring (only meaningful when N_REGIONS>1)")
+
 # Enable explicit floor-planning & reconfiguration of the shell.
 # With a floorplan, it's possible to reuse an existing routed checkpoint of the static layer, as well as do run-time shell reconfiguration
 # However, if disabled, it may be possible to achieve higher clock frequencies and better timing closure

@@ -207,8 +207,13 @@ module design_user_wrapper_{{ c_reg }} (
     (* io_buffer_type = "none" *) input  logic                                S_BSCAN_capture,
     (* io_buffer_type = "none" *) input  logic                                S_BSCAN_bscanid_en,
     (* io_buffer_type = "none" *) input  logic                                dclk,
-{% elif cnfg.fpga_arch == 'versal' and cnfg.en_pr %}   
+{% elif cnfg.fpga_arch == 'versal' and cnfg.en_pr and cnfg.n_reg == 1 %}
     // Debug
+    // Note: only declared/wired when n_reg == 1. With N>1, the per-wrapper
+    // debug_hub IP creates an MDRV-1 multi-driver violation on the shared
+    // s_axi_debug_hub_rdata bus (every wrapper drives the same read path).
+    // For multi-vFPGA builds, debug_hub_user is omitted and the shell-side
+    // s_axi_debug_hub_* signals are tied off cleanly in dynamic_top.
     (* io_buffer_type = "none" *) input  logic[63:0]    	                s_axi_debug_hub_araddr,
     (* io_buffer_type = "none" *) input  logic[1:0]		                    s_axi_debug_hub_arburst,
     (* io_buffer_type = "none" *) input  logic[3:0]		                    s_axi_debug_hub_arcache,
@@ -250,6 +255,22 @@ module design_user_wrapper_{{ c_reg }} (
     (* io_buffer_type = "none" *) output logic                              s_axi_debug_hub_bvalid,
     (* io_buffer_type = "none" *) input  logic                              dclk,
     (* io_buffer_type = "none" *) input  logic                              dresetn,
+{% endif %}
+
+{% if cnfg.en_p2p %}
+    // Inter-vFPGA AXI-Stream (ring topology)
+    // Each vFPGA sends to the next in the ring and receives from the previous.
+    // Wiring is done in dynamic_top: wrapper[i].axis_p2p_send -> wrapper[(i+1)%N].axis_p2p_recv
+    (* io_buffer_type = "none" *) output logic[AXI_DATA_BITS-1:0]             axis_p2p_send_tdata,
+    (* io_buffer_type = "none" *) output logic[AXI_DATA_BITS/8-1:0]           axis_p2p_send_tkeep,
+    (* io_buffer_type = "none" *) output logic                                axis_p2p_send_tlast,
+    (* io_buffer_type = "none" *) input  logic                                axis_p2p_send_tready,
+    (* io_buffer_type = "none" *) output logic                                axis_p2p_send_tvalid,
+    (* io_buffer_type = "none" *) input  logic[AXI_DATA_BITS-1:0]             axis_p2p_recv_tdata,
+    (* io_buffer_type = "none" *) input  logic[AXI_DATA_BITS/8-1:0]           axis_p2p_recv_tkeep,
+    (* io_buffer_type = "none" *) input  logic                                axis_p2p_recv_tlast,
+    (* io_buffer_type = "none" *) output logic                                axis_p2p_recv_tready,
+    (* io_buffer_type = "none" *) input  logic                                axis_p2p_recv_tvalid,
 {% endif %}
 
     // Clock and reset
@@ -421,6 +442,27 @@ module design_user_wrapper_{{ c_reg }} (
     assign axis_card_src[{{i}}].tready          = axis_card_{{i}}_src_tready;
 
 {% endfor %}
+{% endif %}
+{% if cnfg.en_p2p %}
+    // Inter-vFPGA AXI-Stream ring — MVP tie-off implementation
+    //
+    // In this first cut the p2p interfaces are NOT passed to user_logic — they
+    // are wired directly at the wrapper module ports. Send is tied to idle
+    // (tvalid=0), recv is tied to always-ready (tready=1, incoming data
+    // discarded). The ring is present but carries no traffic.
+    //
+    // To make a vFPGA actually drive/consume the ring, replace the tie-off
+    // below with a pass-through to user_logic (add axis_p2p_send/recv ports
+    // to your vfpga_top.svh and route them into inst_user_c*_*'s port map).
+
+    // send: master out — idle
+    assign axis_p2p_send_tvalid                 = 1'b0;
+    assign axis_p2p_send_tdata                  = '0;
+    assign axis_p2p_send_tkeep                  = '0;
+    assign axis_p2p_send_tlast                  = 1'b0;
+
+    // recv: slave in — always accept (discard)
+    assign axis_p2p_recv_tready                 = 1'b1;
 {% endif %}
 {% if cnfg.en_rdma %}
     AXI4S axis_rdma_sink (.*);
@@ -1136,7 +1178,12 @@ module design_user_wrapper_{{ c_reg }} (
         .S_BSCAN_tms(S_BSCAN_tms),
         .S_BSCAN_update(S_BSCAN_update)
     );
-    {% elif cnfg.fpga_arch == 'versal' and cnfg.en_pr %}  
+    {% elif cnfg.fpga_arch == 'versal' and cnfg.en_pr and cnfg.n_reg == 1 %}
+    // Per-wrapper debug_hub IP is only instantiated for single-vFPGA builds.
+    // Multi-vFPGA Versal+PR builds would create multiple slaves driving the
+    // same s_axi_debug_hub_rdata bus (MDRV-1 DRC error). Until a proper AXI
+    // mux is added at the shell level, debug_hub access from inside vFPGAs
+    // is unavailable for N>1 -- the build proceeds without per-vFPGA ILAs.
     debug_hub_user inst_debug_hub_user (
         .dclk(dclk),
         .dresetn(dresetn),

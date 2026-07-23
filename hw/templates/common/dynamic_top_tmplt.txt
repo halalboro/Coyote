@@ -312,7 +312,29 @@ module design_dynamic_top #(
     axis_decoupler inst_host_dcpl_in  (.decouple(decouple_uclk), .s_axis(axis_host_in_s4),    .m_axis(axis_host_in_ul));
     axis_decoupler inst_host_dcpl_out (.decouple(decouple_uclk), .s_axis(axis_host_out_ul), .m_axis(axis_host_out_s4));
 
-{% endif %}	
+{% endif %}
+{% if cnfg.en_p2p %}
+    // ================-----------------------------------------------------------------
+    // P2P AXI-Stream ring
+    // ================-----------------------------------------------------------------
+    // Each vFPGA drives axis_p2p_send_ul[i] with its outbound stream;
+    // the ring wiring below feeds that into axis_p2p_recv_ul[(i+1) mod N_REGIONS]
+    // which becomes the next vFPGA's inbound stream.
+    AXI4S axis_p2p_send_ul [N_REGIONS] ();
+    AXI4S axis_p2p_recv_ul [N_REGIONS] ();
+
+    // Ring wiring: wrapper[i].axis_p2p_send -> wrapper[(i+1) mod N].axis_p2p_recv
+    // Unrolled at template time because SV interface arrays don't allow
+    // modular-arithmetic assignment inside a generate block.
+{% for i in range(0, cnfg.n_reg) %}
+{% set next_i = (i + 1) % cnfg.n_reg %}
+    assign axis_p2p_recv_ul[{{ next_i }}].tdata  = axis_p2p_send_ul[{{ i }}].tdata;
+    assign axis_p2p_recv_ul[{{ next_i }}].tkeep  = axis_p2p_send_ul[{{ i }}].tkeep;
+    assign axis_p2p_recv_ul[{{ next_i }}].tlast  = axis_p2p_send_ul[{{ i }}].tlast;
+    assign axis_p2p_recv_ul[{{ next_i }}].tvalid = axis_p2p_send_ul[{{ i }}].tvalid;
+    assign axis_p2p_send_ul[{{ i }}].tready      = axis_p2p_recv_ul[{{ next_i }}].tready;
+{% endfor %}
+{% endif %}
 {% if cnfg.en_mem %}
     // ================-----------------------------------------------------------------
     // CARD 
@@ -1226,6 +1248,20 @@ module design_dynamic_top #(
         .filter_config_valid(m_filter_config.valid),
 {% endif %}
 
+{% if cnfg.en_p2p %}
+        // Inter-vFPGA p2p AXI-Stream (ring)
+        .axis_p2p_send_tdata            (axis_p2p_send_ul[{{ i }}].tdata),
+        .axis_p2p_send_tkeep            (axis_p2p_send_ul[{{ i }}].tkeep),
+        .axis_p2p_send_tlast            (axis_p2p_send_ul[{{ i }}].tlast),
+        .axis_p2p_send_tready           (axis_p2p_send_ul[{{ i }}].tready),
+        .axis_p2p_send_tvalid           (axis_p2p_send_ul[{{ i }}].tvalid),
+        .axis_p2p_recv_tdata            (axis_p2p_recv_ul[{{ i }}].tdata),
+        .axis_p2p_recv_tkeep            (axis_p2p_recv_ul[{{ i }}].tkeep),
+        .axis_p2p_recv_tlast            (axis_p2p_recv_ul[{{ i }}].tlast),
+        .axis_p2p_recv_tready           (axis_p2p_recv_ul[{{ i }}].tready),
+        .axis_p2p_recv_tvalid           (axis_p2p_recv_ul[{{ i }}].tvalid),
+{% endif %}
+
 {% if cnfg.fpga_arch == 'ultrascale_plus' %}
         .S_BSCAN_drck(S_BSCAN_drck[{{ i }}]),
         .S_BSCAN_shift(S_BSCAN_shift[{{ i }}]),
@@ -1240,7 +1276,11 @@ module design_dynamic_top #(
         .S_BSCAN_capture(S_BSCAN_capture[{{ i }}]),
         .S_BSCAN_bscanid_en(S_BSCAN_bscanid_en[{{ i }}]),
         .dclk                   (dclk),
-{% elif cnfg.fpga_arch == 'versal' and cnfg.en_pr %}   
+{% elif cnfg.fpga_arch == 'versal' and cnfg.en_pr and cnfg.n_reg == 1 %}
+        // Per-wrapper debug_hub connection — only when n_reg == 1.
+        // For N>1 the wrapper does not declare these ports (see
+        // user_wrapper_tmplt.txt); the shell-side s_axi_debug_hub_*
+        // outputs from dynamic_top are tied off after the wrapper loop.
         .s_axi_debug_hub_araddr(s_axi_debug_hub_araddr),
         .s_axi_debug_hub_arburst(s_axi_debug_hub_arburst),
         .s_axi_debug_hub_arcache(s_axi_debug_hub_arcache),
@@ -1294,5 +1334,35 @@ module design_dynamic_top #(
     );
 
 {% endfor %}
-	
+
+{% if cnfg.fpga_arch == 'versal' and cnfg.en_pr and cnfg.n_reg > 1 %}
+    // ------------------------------------------------------------------
+    // Multi-vFPGA debug_hub tie-off
+    // ------------------------------------------------------------------
+    // With N>1, per-wrapper debug_hub_user IPs are NOT instantiated (they
+    // would cause MDRV-1 multi-driver violations on the shared
+    // s_axi_debug_hub_rdata bus, since every wrapper would drive the same
+    // read path). The shell-side master still has its s_axi_debug_hub_*
+    // port set, so we drive a safe null-slave: refuse all transactions
+    // (handshakes never go ready, response valids stay low).
+    //
+    // Practical effect: JTAG/ChipScope ILA access from inside vFPGAs is
+    // unavailable for multi-vFPGA Versal+PR builds. Normal application
+    // operation (data path, control regs, vFPGA reconfiguration) is
+    // unaffected because the shell's debug_hub master is only exercised
+    // by the debug bridge / xsct tooling, which simply won't get a
+    // response.
+    assign s_axi_debug_hub_arready = 1'b0;
+    assign s_axi_debug_hub_awready = 1'b0;
+    assign s_axi_debug_hub_wready  = 1'b0;
+    assign s_axi_debug_hub_rvalid  = 1'b0;
+    assign s_axi_debug_hub_rdata   = '0;
+    assign s_axi_debug_hub_rid     = '0;
+    assign s_axi_debug_hub_rlast   = 1'b0;
+    assign s_axi_debug_hub_rresp   = 2'b00;
+    assign s_axi_debug_hub_bvalid  = 1'b0;
+    assign s_axi_debug_hub_bid     = '0;
+    assign s_axi_debug_hub_bresp   = 2'b00;
+{% endif %}
+
 endmodule

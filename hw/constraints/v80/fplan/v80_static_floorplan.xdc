@@ -35,6 +35,34 @@ resize_pblock [get_pblocks pblock_inst_shell] -add {RAMB18_X6Y96:RAMB18_X7Y167 R
 resize_pblock [get_pblocks pblock_inst_shell] -add {RAMB36_X6Y48:RAMB36_X7Y83 RAMB36_X5Y1:RAMB36_X5Y83 RAMB36_X0Y108:RAMB36_X0Y227}
 resize_pblock [get_pblocks pblock_inst_shell] -add {URAM288_X3Y48:URAM288_X4Y83 URAM288_X3Y1:URAM288_X3Y47}
 resize_pblock [get_pblocks pblock_inst_shell] -add {URAM_CAS_DLY_X3Y2:URAM_CAS_DLY_X4Y3 URAM_CAS_DLY_X3Y0:URAM_CAS_DLY_X3Y1}
-resize_pblock [get_pblocks pblock_inst_shell] -add {CLOCKREGION_X1Y11:CLOCKREGION_X7Y11 CLOCKREGION_X1Y7:CLOCKREGION_X8Y10 CLOCKREGION_X1Y5:CLOCKREGION_X9Y6 CLOCKREGION_X5Y3:CLOCKREGION_X9Y4 CLOCKREGION_X4Y1:CLOCKREGION_X8Y2 CLOCKREGION_X5Y0:CLOCKREGION_X10Y0}
+# Phase 2 (Strategy B): SLR0-only shell, SLR1 and SLR2 fully freed for vFPGAs.
+#
+# Empirical justification (from build_test of Strategy A in
+# examples/07_perf_fpga/hw/build_test/reports/shell_utilization.rpt):
+#   SLR0  19,515 SLICEs used  (17.34%)
+#   SLR1  0 SLICEs used   ← shell did not use the corridor at all
+#   SLR2  0 SLICEs used   ← shell did not use SLR2
+#   SLLs  0 used in either direction
+#
+# The shell genuinely doesn't need any SLR1/SLR2 fabric for this build
+# configuration (no EN_RDMA, no EN_TCP, no EN_MEM). Strategy B drops the
+# SLR1 corridor entirely and removes SLR2 from the pblock, freeing ~50
+# CRs across the upper two SLRs for vFPGAs in a regular mesh layout.
+#
+# What remains in the pblock:
+#   SLR0 fabric (CR Y0..Y4):  shell logic + CPM5 NoC interface
+#   SLR1 row Y4 only:         retains SLR0/SLR1 boundary routing CRs
+#   SLR2/SLR1 rows Y5..Y11:   REMOVED -- now available for vFPGA pblocks
+#
+# NoC tile carry-forward (separate resize_pblock lines above):
+#   NOC_NMU512_X1Y4:X1Y6, NOC_NSU512_X1Y4:X1Y6 stay shell-owned.
+#   NOC_NMU_HBM2E_X0..5/X61..63 (HBM access) stay shell-owned.
+#   NOC_NPS_VNOC_X1Y8:Y13 (vertical routing through SLR2) stay shell-owned.
+#   Other NoC tiles (X3, X5, X7 columns in SLR1/SLR2) become available
+#   for per-vFPGA NMU/NSU instances in the mesh layout.
+#
+# If a future shell config (EN_RDMA, EN_TCP, EN_MEM) needs SLR1/SLR2 area,
+# revert to Strategy A by widening these ranges.
+resize_pblock [get_pblocks pblock_inst_shell] -add {CLOCKREGION_X5Y3:CLOCKREGION_X9Y4 CLOCKREGION_X4Y1:CLOCKREGION_X8Y2 CLOCKREGION_X5Y0:CLOCKREGION_X10Y0}
 set_property SNAPPING_MODE ON [get_pblocks pblock_inst_shell]
 set_property IS_SOFT FALSE [get_pblocks pblock_inst_shell]
