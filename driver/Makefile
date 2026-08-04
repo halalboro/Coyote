@@ -57,7 +57,7 @@ coyote_driver-objs += src/vfpga/vfpga_uisr.o
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 
 BUILD_DIR := $(shell pwd)/build
-EXTRA_CFLAGS += -std=gnu11 -Wno-declaration-after-statement -I$(PWD)/include -I$(PWD)/include/reconfig -I$(PWD)/include/vfpga -I$(PWD)/include/platform 
+EXTRA_CFLAGS += -std=gnu11 -Wno-declaration-after-statement -I$(M)/include -I$(M)/include/reconfig -I$(M)/include/vfpga -I$(M)/include/platform
 
 # To avoid polluting the source files with a bunch of build (*.o, *.mod etc.) files, the source files are temporarily copied to the build folder for compilation
 all:

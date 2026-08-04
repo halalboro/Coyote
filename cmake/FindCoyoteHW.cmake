@@ -154,6 +154,32 @@ set(EN_NET_0 1 CACHE STRING "QSFP port 0")
 # Use QSFP port 1
 set(EN_NET_1 0 CACHE STRING "QSFP port 1")
 
+# Aurora 64B/66B on QSFP1 (4 lanes @ 25.78125 Gbps).
+# Mutually exclusive with EN_NET_1 (both occupy the same physical QSFP1 cage).
+# When EN_AURORA_1=1, the shell instantiates an Aurora IP in parallel to CMAC
+# (which stays on QSFP0 when EN_NET_0=1). Aurora's user-side AXIS is brought
+# into each vFPGA as axis_aurora_rx / axis_aurora_tx.
+set(EN_AURORA_1 0 CACHE STRING "Enable Aurora 64B/66B on QSFP1")
+
+# Number of Aurora streams per vFPGA (currently always 1; reserved for future fan-out)
+set(N_AURORA_AXI 1 CACHE STRING "Number of Aurora streams per vFPGA")
+
+##
+## AVED MANAGEMENT CONTROL (AMC) firmware bringup on V80
+##
+# When EN_AMC=1, the V80 shell adds:
+#   - GCQ (Generic Command Queue) IP between PCIe (S00) and APU/RPU (S01)
+#   - Optional HW Discovery + UUID ROM (Tier 1 from docs/AVED_vs_Coyote.md row 4/6)
+# Plus the build flow gains an AMC firmware pass that emits amc.elf and merges
+# it into the PMC BIF.
+#
+# Requires AVED's iprepo (cmd_queue_v2_0, hw_discovery_v1_0, shell_utils_uuid_rom_v2_0).
+# AVED_IPREPO_PATH must point to AVED/hw/<release>/src/iprepo. Felix's tree at
+# /scratch/felix/aved/AVED/hw/amd_v80_gen5x8_25.1/src/iprepo is the default on rose.
+set(EN_AMC 0 CACHE STRING "Enable AVED Management Control (AMC) firmware integration on V80")
+set(AVED_IPREPO_PATH "/scratch/felix/aved/AVED/hw/amd_v80_gen5x8_25.1/src/iprepo"
+    CACHE STRING "Path to AVED iprepo containing cmd_queue, hw_discovery, uuid_rom IPs")
+
 ##
 ## RECONFIGURATION
 ##
@@ -188,7 +214,7 @@ set(EN_SHELL_PBLOCK 1 CACHE STRING "Enable shell pblock (floorplanning and recon
 ## CLOCKS
 ##
 # Default system clock
-set(ACLK_F 250 CACHE STRING "System clock frequency")
+set(ACLK_F 400 CACHE STRING "System clock frequency")
 
 # Enable clock domain crossing for the network stack
 set(EN_NCLK 1 CACHE STRING "Network clock crossing (250 MHz by default)")
@@ -206,12 +232,12 @@ set(UCLK_F 250 CACHE STRING "User clock frequency")
 # since it can be dynamically generated from the CIPS
 # On UltraScale+ devices, it is always 250 MHz
 # For PCIe Gen4x16 or Gen5x8, it's recommended to set it and ACLK_F to 400 MHz
-set(SCLK_F 250 CACHE STRING "Static layer clock frequency")
+set(SCLK_F 400 CACHE STRING "Static layer clock frequency")
 
 # On Versal devices (V80), users can choose between PCIe Gen4x16 or Gen5x8
 # Both offer the same theoretical throughput (32 GB/s), but can lead to different timing closure
 # Additionally, using PCIe Gen5x8 leaves room for one more QDMA core at Gen5x8, therefore up to 64 Gb/s
-set(PCIE_GEN 4 CACHE STRING "Versal PCIe configuration: Gen4x16 or Gen5x8")
+set(PCIE_GEN 5 CACHE STRING "Versal PCIe configuration: Gen4x16 or Gen5x8")
 
 # Clock uncertainty for HLS synthesis; default 27% since HLS estimates can be different from the actual PnR
 # Therefore, HLS synthesis should always be performed conservatively, with a higher clock uncertainty
@@ -425,10 +451,18 @@ macro(validation_checks_hw)
             # Platform details
             set(FPGA_ARCH "versal")
             set(FPGA_PART xcv80-lsva4737-2MHP-e-S CACHE STRING "FPGA Part" FORCE)
-        
-            # TODO (Versal): The V80 also includes DDR memory, which we could support in the future
-            set(DDR_SIZE 0)
-            set(N_DDR_CHAN 0)
+
+            # Onboard 4 GB DDR4 (axi_noc_mc_ddr4_0). Off by default; enabled
+            # automatically when EN_AMC=1 because AMC firmware on R5 places
+            # its .text/.data/.bss at 0x40000000 (inside DDR_LOW0).
+            # 2^32 = 4 GB.
+            if(EN_AMC)
+                set(DDR_SIZE 32)
+                set(N_DDR_CHAN 1)
+            else()
+                set(DDR_SIZE 0)
+                set(N_DDR_CHAN 0)
+            endif()
             
             # HBM configuration
             set(HCLK_F 400)
@@ -439,9 +473,20 @@ macro(validation_checks_hw)
             set(N_STRIPE_CHAN 32)
             set(MEM_OFFSET 274877906944) # 0x4000000000 ~ 256 GiB
 
-            if (BUILD_SHELL OR BUILD_APP) 
-                message(" ** V80 with BUILD_SHELL=1 or BUILD_APP=1 selected, ignoring static layer clock frequency setting (SCLK_F) and defaulting to 333 MHz")
-                set(SCLK_F 333)
+            if (BUILD_SHELL OR BUILD_APP)
+                # Shell builds link against an existing static checkpoint, whose
+                # SCLK_F was baked in at the time of the static build. The shell's
+                # clk_wiz must be configured for that exact input frequency.
+                # Upstream ships a 333 MHz checkpoint and forces SCLK_F=333 here.
+                # If the user has explicitly overridden SCLK_F (e.g. because they
+                # rebuilt the static at a different frequency and swapped it in),
+                # honor that override.
+                if (NOT DEFINED CACHE{SCLK_F} OR SCLK_F STREQUAL "250")
+                    message(" ** V80 with BUILD_SHELL=1 or BUILD_APP=1 selected, defaulting SCLK_F to 333 MHz to match the shipped static checkpoint")
+                    set(SCLK_F 333)
+                else()
+                    message(" ** V80 with BUILD_SHELL=1 or BUILD_APP=1: honoring user-provided SCLK_F=${SCLK_F} (must match the static checkpoint actually in use)")
+                endif()
             endif()
         
         # Fail on unsupported device
@@ -483,8 +528,12 @@ macro(validation_checks_hw)
         if(N_REGIONS GREATER 1)
             set(MULT_REGIONS 1)
         endif()
-        if(N_REGIONS GREATER 15)
-            message(FATAL_ERROR "Max 15 vFPGAs supported.")
+        # Option A shared-hub P2P NoC: receivers group into 16 hub NSUs (each with
+        # a 1->K demux), so every NMU addresses <=16 hubs regardless of N and the
+        # 17-node full-mesh limit no longer binds. NoC scales to ~76 (NMU tiles);
+        # capped at 32 here (validated hub NoC + IRQ/floorplan scaled to 32).
+        if(N_REGIONS GREATER 32)
+            message(FATAL_ERROR "Max 32 vFPGAs supported (shared-hub P2P NoC; raise with IRQ/floorplan scaling).")
         endif()
 
         # Number of configurations needs to be 1 without PR
@@ -607,9 +656,14 @@ macro(validation_checks_hw)
             set(EN_NET 0)
         endif()
 
-        # TODO (Versal): Add networking
-        if (EN_NET AND FPGA_ARCH STREQUAL "versal")
-            message(FATAL_ERROR "Networking not supported yet on Versal devices.")
+        # Versal networking uses DCMAC (200 Gb/s) — ported from
+        # fpgasystems/Versal-DCMAC into hw/hdl/network/dcmac/ and
+        # hw/bd/versal/cr_dcmac.tcl. Only V80 has a board_config_dcmac entry
+        # so far; other Versal boards (VHK158, VPK120) need an entry added
+        # before EN_NET works on them.
+        if (EN_NET AND FPGA_ARCH STREQUAL "versal" AND NOT FDEV_NAME STREQUAL "v80")
+            message(FATAL_ERROR "EN_NET on Versal currently requires FDEV_NAME=v80 "
+                                "(no DCMAC site mapping for ${FDEV_NAME} in board_config_dcmac.tcl).")
         endif()
         
         # Mult user channels
@@ -629,14 +683,28 @@ macro(validation_checks_hw)
             set(N_WBS 4)
         endif()
 
-        # Ports, only one
+        # Ports: CMAC can be on at most one QSFP. With EN_AURORA_1=1, Aurora
+        # occupies QSFP1 in parallel to CMAC on QSFP0 (the typical setup).
         if(EN_NET_0 AND EN_NET_1)
-            message(FATAL_ERROR "Both network ports enabled.")
-        else()
-            set(QSFP 0)
-            if(EN_NET_1)
-                set(QSFP 1)
-            endif()
+            message(FATAL_ERROR "Both CMAC ports (EN_NET_0 and EN_NET_1) enabled; CMAC supports only one QSFP at a time.")
+        endif()
+        if(EN_AURORA_1 AND EN_NET_1)
+            message(FATAL_ERROR "EN_AURORA_1 and EN_NET_1 both enabled; both want the QSFP1 cage.")
+        endif()
+        if(EN_AMC AND NOT FDEV_NAME STREQUAL "v80")
+            message(FATAL_ERROR "EN_AMC=1 is only supported on V80 (FDEV_NAME=v80).")
+        endif()
+        if(EN_AMC AND NOT IS_DIRECTORY ${AVED_IPREPO_PATH})
+            message(FATAL_ERROR "EN_AMC=1 but AVED_IPREPO_PATH does not exist: ${AVED_IPREPO_PATH}")
+        endif()
+        if(EN_AMC AND NOT BUILD_STATIC)
+            message(WARNING "EN_AMC=1 modifies the static layer (adds GCQ + axi_noc_mc_ddr4_0). "
+                            "The shipped V80 static checkpoint does not include these. "
+                            "You probably want -DBUILD_STATIC=1 for the first build.")
+        endif()
+        set(QSFP 0)
+        if(EN_NET_1)
+            set(QSFP 1)
         endif()
 
         ##
@@ -929,6 +997,15 @@ macro(gen_scripts)
 
     # Bitgen
     configure_file(${CYT_DIR}/scripts/impl/bitgen.tcl.in ${CMAKE_BINARY_DIR}/bitgen.tcl)
+
+    # AMC firmware build wrapper (V80 + EN_AMC=1 only — but always generated so
+    # invocations from bitgen.tcl have a valid path even when AMC is disabled;
+    # it short-circuits with a no-op in that case).
+    if (EN_AMC)
+        configure_file(${CYT_DIR}/scripts/fw/build_amc.sh.in ${CMAKE_BINARY_DIR}/build_amc.sh @ONLY)
+        # Make it executable
+        execute_process(COMMAND chmod +x ${CMAKE_BINARY_DIR}/build_amc.sh)
+    endif()
 
     # Export CMake config
     configure_file(${CYT_DIR}/scripts/export.cmake.in ${CMAKE_BINARY_DIR}/export.cmake)
