@@ -89,40 +89,17 @@ if {$cfg(en_braid_gty) eq 1} {
         ] [get_ips braid_gty]
     }
 
-    ## 32-bit AXI4-Stream CDC FIFOs bridging the GT user clock (257.8125 MHz)
-    ## to Coyote's aclk. Data is 33 bits on the RX side: 32 bits of protocol
-    ## word plus the PHY's 8B/10B error flag as a sideband.
+    ## NO CDC FIFOs HERE ANY MORE.
     ##
-    ## FIFO_MODE 2 is PACKET mode: the FIFO holds a whole frame until tlast is
-    ## written, then releases it. That guarantees the framer can never underrun
-    ## mid-frame (an underrun injects an idle K-word into the payload and the
-    ## receiver correctly discards the frame).
+    ## Two packet-mode axis_data_fifo instances used to bridge the GT user clock
+    ## to aclk. They cost ~25 ns per crossing and there were four of them on a
+    ## measured round trip, which made them the largest known term in the
+    ## latency budget. The vFPGA now runs the protocol core on the GT clocks
+    ## directly (braid_gty_wrapper exports them), so nothing needs bridging.
     ##
-    ## CONSEQUENCE: FIFO_DEPTH MUST EXCEED THE LONGEST FRAME, which is
-    ## 1 header + MAX_WORDS payload + 1 checksum. With N_STAB=1024 that is 34
-    ## words, so depth 32 could never release a full-size frame -- short frames
-    ## worked and long ones failed with ~2 errors each. Depth 64 covers it with
-    ## headroom. If N_STAB grows past 992 bits, raise this again.
-    create_ip -name axis_data_fifo -vendor xilinx.com -library ip \
-        -module_name axis_data_fifo_braid_tx
-    set_property -dict [list \
-        CONFIG.TDATA_NUM_BYTES   {4} \
-        CONFIG.IS_ACLK_ASYNC     {1} \
-        CONFIG.HAS_TLAST         {1} \
-        CONFIG.FIFO_DEPTH        {64} \
-        CONFIG.FIFO_MODE         {2} \
-    ] [get_ips axis_data_fifo_braid_tx]
-
-    ## 33 bits does not fit TDATA_NUM_BYTES, so the RX FIFO carries 5 bytes and
-    ## the error flag rides in bit 32. Wasteful by 7 bits; simpler than a
-    ## separate sideband FIFO that could skew against the data.
-    create_ip -name axis_data_fifo -vendor xilinx.com -library ip \
-        -module_name axis_data_fifo_braid_rx
-    set_property -dict [list \
-        CONFIG.TDATA_NUM_BYTES   {5} \
-        CONFIG.IS_ACLK_ASYNC     {1} \
-        CONFIG.HAS_TLAST         {1} \
-        CONFIG.FIFO_DEPTH        {64} \
-        CONFIG.FIFO_MODE         {2} \
-    ] [get_ips axis_data_fifo_braid_rx]
+    ## If you ever put them back, remember the lesson that cost three builds:
+    ## packet mode holds a whole frame before releasing it, so FIFO_DEPTH must
+    ## exceed 1 header + MAX_WORDS payload + 1 checksum. Depth 32 against a
+    ## 34-word frame let short frames through and failed long ones with ~2
+    ## errors each, which looks like a line-quality problem and is not.
 }

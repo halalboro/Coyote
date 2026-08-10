@@ -89,6 +89,32 @@ module design_user_logic_c{{ c_cnfg }}_{{ c_reg }} (
     metaIntf.m                  filter_config,
 {% endif %}
 
+{% if ( cnfg.en_net_raw and ( cnfg.net_raw_vfpga_id == c_reg ) ) %}
+    // Raw Ethernet: whole frames, 512-bit, aclk domain. This vFPGA is the MAC
+    // client - it must build and parse the full frame itself, including
+    // destination MAC, source MAC and EtherType. mac_status is
+    // {gt_rst_done_rx, gt_rst_done_tx, rst_done, rst_state[4:0]}.
+    AXI4S.s                     axis_net_raw_rx,
+    AXI4S.m                     axis_net_raw_tx,
+    input  wire[7:0]            mac_status,
+{% endif %}
+
+{% if (cnfg.en_aurora_1 or cnfg.en_braid_gty) and c_reg == 0 %}
+    AXI4S.s                     axis_aurora_rx,
+    AXI4S.m                     axis_aurora_tx,
+    input  wire                 aurora_channel_up,
+    input  wire[3:0]            aurora_lane_up,
+{% endif %}
+
+{% if cnfg.en_braid_gty and c_reg == 0 %}
+    // BRAID: axis_aurora_tx is in braid_tx_clk, axis_aurora_rx in braid_rx_clk.
+    input  wire                 braid_tx_clk,
+    input  wire                 braid_rx_clk,
+    input  wire                 braid_tx_rstn,
+    input  wire                 braid_rx_rstn,
+    output wire[2:0]            braid_loopback_sel,
+{% endif %}
+
     // Clock and reset
     input  wire                 aclk,
     input  wire[0:0]            aresetn

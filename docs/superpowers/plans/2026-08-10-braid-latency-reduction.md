@@ -210,7 +210,7 @@ The TX and RX FSMs in `braid_link` already share no state except the counters an
   - `braid_link_tx #(N_STAB, N_CORR) (clk, rstn, link_up, clr, syn_bits[N_STAB-1:0], syn_valid, syn_round[19:0], syn_words_sel[7:0], corr_bits[N_CORR-1:0], corr_valid, phy_tx_data[31:0], phy_tx_valid, phy_tx_last, phy_tx_ready, tx_frames[31:0], tx_dropped[31:0])`
   - `braid_link_rx #(N_STAB, N_CORR) (clk, rstn, link_up, clr, syn_out_bits[N_STAB-1:0], syn_out_valid, syn_out_round[31:0], syn_out_gap, corr_out_bits[N_CORR-1:0], corr_out_valid, phy_rx_data[31:0], phy_rx_valid, phy_rx_last, phy_rx_err, rx_frames[31:0], rx_errors[31:0], rx_gaps[31:0])`
 
-- [ ] **Step 1: Create `braid_link_tx.sv`**
+- [x] **Step 1: Create `braid_link_tx.sv`**
 
 Copy the header comment, the `SYN_WORDS`/`CORR_WORDS`/`MAX_WORDS` localparams, the
 `TYPE_SYN`/`TYPE_CORR` localparams, the `cks_pack` function, and the entire TX
@@ -218,12 +218,12 @@ Copy the header comment, the `SYN_WORDS`/`CORR_WORDS`/`MAX_WORDS` localparams, t
 **Interfaces** above. Keep the portability rule comment — this file is still
 copied to the RFSoC.
 
-- [ ] **Step 2: Create `braid_link_rx.sv`**
+- [x] **Step 2: Create `braid_link_rx.sv`**
 
 Same treatment for the RX `always_ff` block, the `rx_*` declarations, and
 `cks_pack` (duplicated — the two files must not depend on each other).
 
-- [ ] **Step 3: Update the testbench to instantiate both halves**
+- [x] **Step 3: Update the testbench to instantiate both halves**
 
 Replace each `braid_link` instance with a `braid_link_tx` + `braid_link_rx` pair
 on the same clock. For instance A:
@@ -251,7 +251,7 @@ on the same clock. For instance A:
 
 Repeat for instance B with the `b_` signals.
 
-- [ ] **Step 4: Update `run.sh` to compile both files**
+- [x] **Step 4: Update `run.sh` to compile both files**
 
 ```bash
 xvlog -sv tb_braid.sv \
@@ -260,7 +260,7 @@ xvlog -sv tb_braid.sv \
       ../../../hw/hdl/braid/braid_framer.sv
 ```
 
-- [ ] **Step 5: Run the simulation and compare against the recorded baseline**
+- [x] **Step 5: Run the simulation and compare against the recorded baseline**
 
 ```bash
 cd /scratch/anubhav/Coyote/examples/16_braid/sim && ./run.sh 2>&1 | tail -25
@@ -277,12 +277,12 @@ Test 3: 1 word -> 10 cycles ... 32 words -> 41 cycles
 **If the Test 3 cycle counts changed, the split altered behaviour — stop and
 find out why before proceeding.**
 
-- [ ] **Step 6: Update `vfpga_top.svh` to instantiate both halves**
+- [x] **Step 6: Update `vfpga_top.svh` to instantiate both halves**
 
 Replace the single `braid_link` instance with the `_tx` and `_rx` pair, both on
 `aclk`, wired to the same signals as before.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add examples/16_braid/hw/src/hdl/ examples/16_braid/sim/ \
@@ -313,7 +313,7 @@ pulses counted in `aclk`.
   `phy_tx_data/valid/last/ready`, `phy_rx_data/valid/last/err` replace the
   256-bit AXIS pair.
 
-- [ ] **Step 1: Change the wrapper to expose GT clocks and 32-bit word ports**
+- [x] **Step 1: Change the wrapper to expose GT clocks and 32-bit word ports**
 
 Delete `axis_data_fifo_braid_tx`/`_rx` instances and the `AXI4S` ports. Expose
 instead:
@@ -337,7 +337,7 @@ instead:
 wired straight through to `braid_phy_gty`. `channel_up`/`lane_up` keep their
 existing `aclk` synchronisers.
 
-- [ ] **Step 2: Widen the shell→vFPGA plumbing**
+- [x] **Step 2: Widen the shell→vFPGA plumbing**
 
 The templates currently carry a 256-bit AXIS pair. Reuse those wires for the
 32-bit word ports rather than adding new ones: in
@@ -348,7 +348,7 @@ new signals through `dynamic_top` → `user_wrapper` → `user_logic`, gated by
 `cnfg.en_braid_gty`, following the pattern already used for
 `aurora_channel_up`.
 
-- [ ] **Step 3: Move the generator, checker and RTT counter in `vfpga_top.svh`**
+- [x] **Step 3: Move the generator, checker and RTT counter in `vfpga_top.svh`**
 
 - `braid_link_tx` + syndrome generator + `cyc_cnt` + `t_start`: clocked by `tx_clk`.
 - `braid_link_rx` + checker: clocked by `rx_clk`.
@@ -366,7 +366,7 @@ new signals through `dynamic_top` → `user_wrapper` → `user_logic`, gated by
                       .dest_clk(tx_clk), .dest_rst(~tx_rstn), .dest_pulse(rtt_end_tx));
 ```
 
-- [ ] **Step 4: Add the CSR crossing layer**
+- [x] **Step 4: Add the CSR crossing layer**
 
 Control bits `aclk` → `tx_clk` and `aclk` → `rx_clk`:
 
@@ -391,12 +391,12 @@ Counters `tx_clk`/`rx_clk` → `aclk`: convert each increment to a pulse, cross 
 `rtt_cycles` is stable between updates, so cross it with `xpm_cdc_handshake`
 (WIDTH 32) rather than an array of synchronisers.
 
-- [ ] **Step 5: Delete the FIFO IPs**
+- [x] **Step 5: Delete the FIFO IPs**
 
 Remove both `create_ip ... axis_data_fifo_braid_tx` and `..._rx` blocks and their
 comment from `braid_infrastructure.tcl`.
 
-- [ ] **Step 6: Run the simulation**
+- [x] **Step 6: Run the simulation**
 
 ```bash
 cd /scratch/anubhav/Coyote/examples/16_braid/sim && ./run.sh 2>&1 | tail -20
@@ -407,19 +407,74 @@ so this only confirms the protocol core is still intact after the edits.
 
 - [ ] **Step 7: Build, program both cards, measure**
 
-Expected: **RTT fixed term ~478 ns** (578 − ~100), one-way ~239 ns.
-`lost=0`, payloads matched.
+THE PREDICTION, sharpened by simulation after the RTL landed. `tb_braid_sys`
+now models both architectures and reports one-way at 4 words as **140.0 ns
+pre-2b, 91.0 ns post-2b**. `tb_braid_cdc` measures the one crossing that
+remains at **18.1 ns mean**, and a round trip contains two of them.
 
-If `rtt_med` drops by materially less than 80 ns, the ~50 ns/direction CDC
-estimate was wrong and the remaining stages should be re-costed before starting
-Task 3.
+So the round trip should read:
 
-- [ ] **Step 8: Commit**
+| if the 166 ns/direction unaccounted term is... | predicted RTT |
+|---|---|
+| real and untouched by 2b — our GT is genuinely slow (A) | ~550 ns |
+| an artefact of an optimistic FIFO model (B) | ~220 ns |
+
+Measured pre-2b was 612 ns. Anything near 550 says the FIFOs were never the
+problem and Task 3 (rate and width) is the only remaining lever. Anything near
+220 says sub-100 ns one-way is live.
+
+**These are distinguishable by 330 ns.** That is the point of this task: not to
+save latency, but to find out where it is.
+
+Then, on the same bitstream and without a peer or a cable:
+
+```
+braid bench -l 2      # near-end PMA loopback: our fabric + our GT alone
+braid bench           # peer echoing: the whole path
+```
+
+The difference is cable plus far card. If `-l 2` alone accounts for most of the
+RTT, the transceiver is the problem and no amount of fabric work will fix it.
+
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A
 git commit -m "braid: run protocol datapath on GT clocks, delete fabric CDC FIFOs"
 ```
+
+---
+
+### Deviations from the plan as written (Task 2b)
+
+Four, all found while implementing:
+
+1. **Counters cross with `xpm_cdc_gray`, not pulse-counted in aclk.** The plan
+   said convert each increment to a pulse and count in aclk. That LOSES counts:
+   `tx_dropped` increments every cycle when the link is down and the generator
+   is free-running at `INTERVAL=0`, far faster than a pulse crossing can
+   forward. Gray-coding the counter itself cannot lose an increment.
+
+2. **The echo path needs a crossing the plan did not mention.** `braid_link_tx`
+   must be clocked by the local transmit clock, so a received syndrome cannot be
+   reflected without changing domain. It is the only crossing left on the
+   syndrome path, down from four, and it is a measurement artefact — the real
+   decoder consumes syndromes in the receive domain and never pays it.
+
+3. **`N_STAB` drops from 1024 to 992 (31 words).** That crossing must carry
+   `{round, payload}` atomically and `xpm_cdc_handshake` caps at 1024 bits;
+   992 + 20 fits, 1024 + 20 does not. Splitting across two handshakes would
+   break the atomicity that makes it correct.
+
+4. **Runtime `LOOPBACK` control added (register 13).** Not in the plan. It costs
+   ~20 lines and it is the only way to weigh our own transceiver without a
+   second bitstream — which is precisely the question this task exists to
+   answer. Changing it resets the GT, so the link drops and returns.
+
+New coverage: `sim/tb_braid_cdc.sv` exercises the crossing at its real 1012-bit
+width against genuinely unrelated 257.8125/400 MHz clocks. The plan called the
+CSR crossing layer the biggest bug surface with no simulation; it has one now.
+`sim/run.sh` runs all three testbenches.
 
 ---
 

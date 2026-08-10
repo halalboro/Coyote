@@ -105,6 +105,36 @@ module design_dynamic_top #(
     metaIntf.m                                  m_filter_config,
 {% endif %}
 
+{% if cnfg.en_net_raw %}
+    // Raw Ethernet to vFPGA {{ cnfg.net_raw_vfpga_id }}: 512-bit AXIS, aclk domain
+    // (network_top crosses it over from nclk). Unlike the sniffer, this is
+    // bidirectional: the vFPGA both receives and transmits whole frames.
+    AXI4S.s                                     s_net_raw_rx,
+    AXI4S.m                                     m_net_raw_tx,
+    input  wire[7:0]                            mac_status,
+{% endif %}
+
+{% if cnfg.en_aurora_1 or cnfg.en_braid_gty %}
+    // Aurora 64B/66B (256-bit AXIS, aclk domain, status sidebands)
+    AXI4S.s                                     s_aurora_rx,
+    AXI4S.m                                     m_aurora_tx,
+    input  wire                                 aurora_channel_up,
+    input  wire[3:0]                            aurora_lane_up,
+{% endif %}
+
+{% if cnfg.en_braid_gty %}
+    // BRAID reuses the two AXIS ports above, but NOT the aclk domain: m_aurora_tx
+    // belongs to braid_tx_clk and s_aurora_rx to braid_rx_clk. The GT user clocks
+    // come in here so the vFPGA can run the protocol core on them with no CDC in
+    // the syndrome path. dclk, aclk and uclk already cross this boundary, so two
+    // more clocks is a precedented crossing rather than a new kind of one.
+    input  wire                                 braid_tx_clk,
+    input  wire                                 braid_rx_clk,
+    input  wire                                 braid_tx_rstn,
+    input  wire                                 braid_rx_rstn,
+    output wire[2:0]                            braid_loopback_sel,
+{% endif %}
+
 {% if cnfg.en_wb %}
     // Writeback
     metaIntf.m                                  m_wback,
@@ -174,6 +204,24 @@ module design_dynamic_top #(
     output logic                                s_axi_debug_hub_bvalid,
     input  logic                                dclk,
     input  logic                                dresetn,
+{% endif %}
+{% if cnfg.fdev == 'v80' and cnfg.en_p2p == 1 and cnfg.n_reg > 1 %}
+    // Milestone B.2 — P2P AXIS to/from the shell-side NoC bridges (per region).
+    // m_axis_p2p_send_XX : vFPGA send stream out of dynamic (into axis_to_mm), w/ tdest.
+    // s_axis_p2p_recv_XX : vFPGA recv stream into dynamic (out of mm_to_axis).
+{% for i in range(cnfg.n_reg) %}
+    output logic[AXI_DATA_BITS-1:0]             m_axis_p2p_send_{{ '%02d' % i }}_tdata,
+    output logic[AXI_DATA_BITS/8-1:0]           m_axis_p2p_send_{{ '%02d' % i }}_tkeep,
+    output logic                                m_axis_p2p_send_{{ '%02d' % i }}_tlast,
+    output logic[P2P_DEST_BITS-1:0]             m_axis_p2p_send_{{ '%02d' % i }}_tdest,
+    output logic                                m_axis_p2p_send_{{ '%02d' % i }}_tvalid,
+    input  logic                                m_axis_p2p_send_{{ '%02d' % i }}_tready,
+    input  logic[AXI_DATA_BITS-1:0]             s_axis_p2p_recv_{{ '%02d' % i }}_tdata,
+    input  logic[AXI_DATA_BITS/8-1:0]           s_axis_p2p_recv_{{ '%02d' % i }}_tkeep,
+    input  logic                                s_axis_p2p_recv_{{ '%02d' % i }}_tlast,
+    input  logic                                s_axis_p2p_recv_{{ '%02d' % i }}_tvalid,
+    output logic                                s_axis_p2p_recv_{{ '%02d' % i }}_tready,
+{% endfor %}
 {% endif %}
 
     // Clock and reset
@@ -315,17 +363,37 @@ module design_dynamic_top #(
 {% endif %}
 {% if cnfg.en_p2p %}
     // ================-----------------------------------------------------------------
-    // P2P AXI-Stream ring
+    // P2P AXI-Stream — NoC-bridged any-to-any (Stage 2)
     // ================-----------------------------------------------------------------
-    // Each vFPGA drives axis_p2p_send_ul[i] with its outbound stream;
-    // the ring wiring below feeds that into axis_p2p_recv_ul[(i+1) mod N_REGIONS]
-    // which becomes the next vFPGA's inbound stream.
+    // Each vFPGA drives axis_p2p_send_ul[i] (+ tdest) with its outbound stream;
+    // it exits to the shell-side axis_to_mm bridge (m_axis_p2p_send_XX). The
+    // shell-side mm_to_axis bridge (s_axis_p2p_recv_XX) feeds axis_p2p_recv_ul[i]
+    // back to the vFPGA. Replaces the earlier fixed ring topology.
     AXI4S axis_p2p_send_ul [N_REGIONS] ();
     AXI4S axis_p2p_recv_ul [N_REGIONS] ();
+    // tdest sideband alongside axis_p2p_send_ul (AXI4S carries no routing id).
+    logic [P2P_DEST_BITS-1:0] axis_p2p_send_ul_tdest [N_REGIONS];
 
-    // Ring wiring: wrapper[i].axis_p2p_send -> wrapper[(i+1) mod N].axis_p2p_recv
-    // Unrolled at template time because SV interface arrays don't allow
-    // modular-arithmetic assignment inside a generate block.
+{% if cnfg.fdev == 'v80' and cnfg.n_reg > 1 %}
+    // Bridge to the shell NoC endpoints (flat module ports).
+{% for i in range(0, cnfg.n_reg) %}
+    // send: wrapper -> shell (axis_to_mm)
+    assign m_axis_p2p_send_{{ '%02d' % i }}_tdata     = axis_p2p_send_ul[{{ i }}].tdata;
+    assign m_axis_p2p_send_{{ '%02d' % i }}_tkeep     = axis_p2p_send_ul[{{ i }}].tkeep;
+    assign m_axis_p2p_send_{{ '%02d' % i }}_tlast     = axis_p2p_send_ul[{{ i }}].tlast;
+    assign m_axis_p2p_send_{{ '%02d' % i }}_tdest     = axis_p2p_send_ul_tdest[{{ i }}];
+    assign m_axis_p2p_send_{{ '%02d' % i }}_tvalid    = axis_p2p_send_ul[{{ i }}].tvalid;
+    assign axis_p2p_send_ul[{{ i }}].tready           = m_axis_p2p_send_{{ '%02d' % i }}_tready;
+    // recv: shell (mm_to_axis) -> wrapper
+    assign axis_p2p_recv_ul[{{ i }}].tdata            = s_axis_p2p_recv_{{ '%02d' % i }}_tdata;
+    assign axis_p2p_recv_ul[{{ i }}].tkeep            = s_axis_p2p_recv_{{ '%02d' % i }}_tkeep;
+    assign axis_p2p_recv_ul[{{ i }}].tlast            = s_axis_p2p_recv_{{ '%02d' % i }}_tlast;
+    assign axis_p2p_recv_ul[{{ i }}].tvalid           = s_axis_p2p_recv_{{ '%02d' % i }}_tvalid;
+    assign s_axis_p2p_recv_{{ '%02d' % i }}_tready    = axis_p2p_recv_ul[{{ i }}].tready;
+{% endfor %}
+{% else %}
+    // Non-V80 (or single region): no NoC bridge available — fall back to the
+    // fixed ring so the p2p interfaces stay legal and self-contained.
 {% for i in range(0, cnfg.n_reg) %}
 {% set next_i = (i + 1) % cnfg.n_reg %}
     assign axis_p2p_recv_ul[{{ next_i }}].tdata  = axis_p2p_send_ul[{{ i }}].tdata;
@@ -335,6 +403,8 @@ module design_dynamic_top #(
     assign axis_p2p_send_ul[{{ i }}].tready      = axis_p2p_recv_ul[{{ next_i }}].tready;
 {% endfor %}
 {% endif %}
+{% endif %}
+
 {% if cnfg.en_mem %}
     // ================-----------------------------------------------------------------
     // CARD 
@@ -1248,11 +1318,49 @@ module design_dynamic_top #(
         .filter_config_valid(m_filter_config.valid),
 {% endif %}
 
+{% if ( cnfg.en_net_raw and ( cnfg.net_raw_vfpga_id == i ) ) %}
+        .net_raw_rx_tdata(s_net_raw_rx.tdata),
+        .net_raw_rx_tkeep(s_net_raw_rx.tkeep),
+        .net_raw_rx_tlast(s_net_raw_rx.tlast),
+        .net_raw_rx_tready(s_net_raw_rx.tready),
+        .net_raw_rx_tvalid(s_net_raw_rx.tvalid),
+        .net_raw_tx_tdata(m_net_raw_tx.tdata),
+        .net_raw_tx_tkeep(m_net_raw_tx.tkeep),
+        .net_raw_tx_tlast(m_net_raw_tx.tlast),
+        .net_raw_tx_tready(m_net_raw_tx.tready),
+        .net_raw_tx_tvalid(m_net_raw_tx.tvalid),
+        .mac_status(mac_status),
+{% endif %}
+
+{% if (cnfg.en_aurora_1 or cnfg.en_braid_gty) and i == 0 %}
+        .aurora_rx_tdata(s_aurora_rx.tdata),
+        .aurora_rx_tkeep(s_aurora_rx.tkeep),
+        .aurora_rx_tlast(s_aurora_rx.tlast),
+        .aurora_rx_tready(s_aurora_rx.tready),
+        .aurora_rx_tvalid(s_aurora_rx.tvalid),
+        .aurora_tx_tdata(m_aurora_tx.tdata),
+        .aurora_tx_tkeep(m_aurora_tx.tkeep),
+        .aurora_tx_tlast(m_aurora_tx.tlast),
+        .aurora_tx_tready(m_aurora_tx.tready),
+        .aurora_tx_tvalid(m_aurora_tx.tvalid),
+        .aurora_channel_up(aurora_channel_up),
+        .aurora_lane_up(aurora_lane_up),
+{% endif %}
+
+{% if cnfg.en_braid_gty and i == 0 %}
+        .braid_tx_clk(braid_tx_clk),
+        .braid_rx_clk(braid_rx_clk),
+        .braid_tx_rstn(braid_tx_rstn),
+        .braid_rx_rstn(braid_rx_rstn),
+        .braid_loopback_sel(braid_loopback_sel),
+{% endif %}
+
 {% if cnfg.en_p2p %}
-        // Inter-vFPGA p2p AXI-Stream (ring)
+        // Inter-vFPGA p2p AXI-Stream (NoC-bridged; tdest selects target vFPGA)
         .axis_p2p_send_tdata            (axis_p2p_send_ul[{{ i }}].tdata),
         .axis_p2p_send_tkeep            (axis_p2p_send_ul[{{ i }}].tkeep),
         .axis_p2p_send_tlast            (axis_p2p_send_ul[{{ i }}].tlast),
+        .axis_p2p_send_tdest            (axis_p2p_send_ul_tdest[{{ i }}]),
         .axis_p2p_send_tready           (axis_p2p_send_ul[{{ i }}].tready),
         .axis_p2p_send_tvalid           (axis_p2p_send_ul[{{ i }}].tvalid),
         .axis_p2p_recv_tdata            (axis_p2p_recv_ul[{{ i }}].tdata),

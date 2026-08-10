@@ -29,27 +29,43 @@ An RFSoC cannot run Coyote — `FindCoyoteHW.cmake` supports only `u55c`, `u250`
 
 vFPGA side (this example):
 ```
-hw/src/hdl/braid_link.sv       protocol core -- PORTABLE, no Coyote types
+hw/src/hdl/braid_link_tx.sv    protocol core, TX half -- PORTABLE, no Coyote types
+hw/src/hdl/braid_link_rx.sv    protocol core, RX half -- PORTABLE, no Coyote types
+hw/src/hdl/braid_cdc_event.sv  atomic value crossing (rx_clk -> tx_clk, and to aclk)
 hw/src/hdl/braid_phy_shim.sv   32-bit words <-> the shell's 256-bit AXIS
-hw/src/vfpga_top.svh           CSRs, syndrome generator, checker
-sw/src/main.cpp                host app (send / recv / status)
+hw/src/vfpga_top.svh           CSRs, syndrome generator, checker, CDC layer
+sw/src/main.cpp                host app (send / recv / bench / status)
 ```
 
 Shell side (Coyote tree, gated by `EN_BRAID_GTY`):
 ```
 hw/hdl/braid/braid_phy_gty.sv      GTY + bring-up FSM + K-char framing
-hw/hdl/braid/braid_gty_wrapper.sv  refclk buffer, CDC to aclk, status
-scripts/ip_inst/braid_infrastructure.tcl        GT Wizard + CDC FIFO IP
+hw/hdl/braid/braid_gty_wrapper.sv  refclk buffer, GT clock export, status
+scripts/ip_inst/braid_infrastructure.tcl        GT Wizard
 hw/constraints/u280/.../u280_shell_zbraid_1.xdc lane 0 pins on QSFP1
 ```
 
 The GT lives in the shell because its pins are top-level. The wrapper presents
 the **same** 256-bit AXIS interface the Aurora integration used, so the
 `dynamic_top` / `user_wrapper` / `user_logic` templates needed only their
-existing `en_aurora_1` gates widened to `en_aurora_1 or en_braid_gty` — no new
-plumbing.
+existing `en_aurora_1` gates widened to `en_aurora_1 or en_braid_gty`, plus four
+clock/reset wires and a loopback control added for BRAID alone.
 
-**`braid_link.sv` must never acquire a Coyote type.** No `AXI4S`, no
+### The streams are not in aclk
+
+Read this before wiring anything to them. `axis_aurora_tx` is in
+`braid_tx_clk` and `axis_aurora_rx` is in `braid_rx_clk`, both 257.8125 MHz,
+and the receive one is *recovered from the far card* so it is not even the same
+clock as the transmit one. Only the AXI4-Lite CSR block still runs in `aclk`.
+
+The two fabric CDC FIFOs that used to make everything `aclk` cost ~25 ns per
+crossing, with four of them on a round trip. Removing them is the single
+largest latency saving available in this design. The price is that an `AXI4S`
+interface object carries no clock of its own, so attaching `aclk` logic to
+these streams produces no warning from any tool — it just corrupts data
+occasionally.
+
+**The protocol cores must never acquire a Coyote type.** No `AXI4S`, no
 `lynx_pkg`, no `axi_ctrl` — plain `logic` ports only. That is what makes the
 RFSoC port a file copy instead of a rewrite, and it is the constraint most
 likely to be broken by a well-meaning cleanup.

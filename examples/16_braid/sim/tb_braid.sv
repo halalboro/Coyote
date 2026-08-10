@@ -13,7 +13,8 @@
  * asserts that a correctly aligned link passes AND that a misaligned one is
  * caught rather than silently delivering bad syndromes.
  *
- *   xvlog -sv tb_braid.sv ../hw/src/hdl/braid_link.sv \
+ *   xvlog -sv tb_braid.sv ../hw/src/hdl/braid_link_tx.sv \
+ *                          ../hw/src/hdl/braid_link_rx.sv \
  *              ../../../hw/hdl/braid/braid_framer.sv
  *   xelab -debug typical tb_braid -s tb && xsim tb -R
  */
@@ -22,7 +23,7 @@
 
 module tb_braid;
 
-    localparam int N_STAB = 1024;   // match vfpga_top: 32 words max
+    localparam int N_STAB = 992;    // match vfpga_top: 31 words max (echo CDC cap)
     localparam int N_CORR = 64;
 
     logic clk = 0, rstn = 0;
@@ -262,7 +263,10 @@ module tb_braid;
         $display("\n=== Test 3: protocol-only latency (no GT, no CDC) ===");
         $display("  words  bytes   cycles      ns @257.8MHz");
         MISALIGN = 0;
-        for (int w = 1; w <= 32; w = w * 2) begin
+        // 1,2,4,8,16 then the full-width 31. MAX is 31 rather than 32 because
+        // vfpga_top's echo crossing caps the payload at 992 bits; doubling alone
+        // would stop at 16 and never exercise a full-size frame.
+        for (int w = 1; w <= 31; w = (w * 2 > 31 && w != 31) ? 31 : w * 2) begin
             time t0, t1;
             a_words = w[7:0];
             @(posedge clk);

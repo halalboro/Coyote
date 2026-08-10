@@ -109,7 +109,7 @@ static int judge(coyote::cThread& t) {
 
 int main(int argc, char* argv[]) {
     std::string mode;
-    uint64_t    rounds, interval, iters;
+    uint64_t    rounds, interval, iters, lb;
     int         wait_s;
 
     po::options_description opts("Options");
@@ -118,11 +118,13 @@ int main(int argc, char* argv[]) {
         ("rounds,r",   po::value<uint64_t>(&rounds)->default_value(DEFAULT_ROUNDS),
          "send: rounds to generate (0 = free-run)")
         ("interval,i", po::value<uint64_t>(&interval)->default_value(DEFAULT_INTERVAL),
-         "send: aclk cycles between rounds (400 = 1 us at 400 MHz)")
+         "send: tx_clk cycles between rounds (258 = 1 us at 257.8125 MHz)")
         ("wait,w",     po::value<int>(&wait_s)->default_value(30),
          "recv: seconds to collect before reporting")
         ("iters,n",    po::value<uint64_t>(&iters)->default_value(DEFAULT_ITERS),
-         "bench: iterations per size");
+         "bench: iterations per size")
+        ("loopback,l", po::value<uint64_t>(&lb)->default_value(loopback::NORMAL),
+         "GT loopback: 0=normal 1=near-PCS 2=near-PMA 4=far-PCS 6=far-PMA");
 
     po::options_description hidden;
     hidden.add_options()("mode", po::value<std::string>(&mode)->default_value("status"), "");
@@ -145,6 +147,11 @@ int main(int argc, char* argv[]) {
                   << "  bench   round-trip latency sweep across syndrome sizes\n"
                   << "  status  print link and PHY diagnostics\n\n"
                   << "  Race-free: 'arm' on card A, 'send' on card B, 'report' on A.\n\n"
+                  << "  Latency decomposition, one card, no cable, no peer:\n"
+                  << "    braid bench -l 2    reflect in our own PMA -> our fabric + our GT\n"
+                  << "    braid bench         peer echoing            -> the whole path\n"
+                  << "  The difference is cable + far card. Neither number means anything\n"
+                  << "  on its own; the point is subtracting one from the other.\n\n"
                   << opts << "\n";
         return 0;
     }
@@ -153,6 +160,17 @@ int main(int argc, char* argv[]) {
     coyote::cThread t(VFPGA_ID, getpid());
 
     if (!csr_ok(t)) return 1;
+
+    // Set loopback before anything waits on the link: changing it resets the
+    // transceiver, so the link drops and has to come back up. Written on every
+    // run, including the default 0, so a previous -l 2 cannot silently persist
+    // in the register and quietly invalidate the next measurement.
+    if (t.getCSR(reg::LOOPBACK) != lb) {
+        t.setCSR(lb, reg::LOOPBACK);
+        std::cout << "  loopback -> " << lb << " (GT reset; link will drop)\n";
+    }
+    if (lb != loopback::NORMAL)
+        std::cout << "  NOTE: loopback " << lb << " active -- this is NOT a link measurement.\n";
 
     if (mode == "status") {
         uint64_t s = t.getCSR(reg::STATUS);
@@ -194,9 +212,11 @@ int main(int argc, char* argv[]) {
 
     // Round-trip latency sweep across syndrome sizes.
     if (mode == "bench") {
-        const double ns_per_cycle = 1000.0 / ACLK_MHZ;
+        // RTT_CYCLES is counted in the GT transmit clock, not aclk. The
+        // datapath moved off aclk in Task 2b; only the CSR block is still there.
+        const double ns_per_cycle = 1000.0 / TXCLK_MHZ;
 
-        std::cout << iters << " iterations per size, aclk " << ACLK_MHZ
+        std::cout << iters << " iterations per size, tx_clk " << TXCLK_MHZ
                   << " MHz (" << ns_per_cycle << " ns/cycle).\n"
                   << "Round trip; halve for a one-way estimate.\n\n";
 
@@ -243,7 +263,13 @@ int main(int argc, char* argv[]) {
 
         uint64_t total_bad = 0;
 
-        for (uint32_t words = 1; words <= MAX_SYN_WORDS; words *= 2) {
+        // Powers of two up to 16, then the full-width point. MAX_SYN_WORDS is
+        // 31, not 32, so doubling alone would stop at 16 and never exercise a
+        // full-size frame -- which is the size most likely to expose a depth or
+        // width bug.
+        for (uint32_t words = 1; words <= MAX_SYN_WORDS;
+             words = (words * 2 > MAX_SYN_WORDS && words != MAX_SYN_WORDS)
+                   ? MAX_SYN_WORDS : words * 2) {
             std::vector<uint64_t> rtt;
             rtt.reserve(iters);
             uint64_t lost = 0;
@@ -316,7 +342,7 @@ int main(int argc, char* argv[]) {
         t.setCSR(rounds, reg::N_ROUNDS);
         t.setCSR(interval, reg::INTERVAL);
 
-        double us = interval / ACLK_MHZ;
+        double us = interval / TXCLK_MHZ;
         std::cout << "Generating " << (rounds ? std::to_string(rounds) : "unbounded")
                   << " rounds, one every " << interval << " cycles ("
                   << us << " us)\n";
