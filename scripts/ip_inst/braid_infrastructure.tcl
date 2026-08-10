@@ -1,0 +1,128 @@
+##############################################################################
+## BRAID — shell-level IP generation
+##
+## Gated by cfg(en_braid_gty). Consumed by hw/hdl/braid/braid_gty_wrapper.sv.
+##
+## One GTY lane, 10.3125 Gbps, 8B/10B (no 64B/66B gearbox), 32-bit user
+## datapath at 257.8125 MHz, 156.25 MHz reference, TX buffer bypassed.
+##############################################################################
+
+if {$cfg(en_braid_gty) eq 1} {
+
+    if {$cfg(fdev) eq "u280"} {
+        ## VERIFIED against Vivado 2025.1 / gtwizard_ultrascale:1.7 on a GTYE4
+        ## part: this dict was applied and generate_target completed.
+        ##
+        ## KEEP THIS AS ONE set_property -dict. Setting these individually
+        ## FAILS -- the wizard validates each property against a half-configured
+        ## state and rejects e.g. TX_REFCLK_FREQUENCY 156.25 with a bare
+        ## "failed due to earlier errors". Confirmed experimentally: 156.25,
+        ## 161.1328125, 257.8125 and 322.265625 were each rejected on their own,
+        ## then all accepted together in a dict. Do not split this up.
+        create_ip -name gtwizard_ultrascale -vendor xilinx.com -library ip \
+            -module_name braid_gty
+
+        ## RX_BUFFER_MODE 0 bypasses the RX elastic buffer, which is the largest
+        ## single GT latency term. It does NOT require the two ends to share a
+        ## reference clock: the buffer exists to bridge the recovered clock and
+        ## whatever RXUSRCLK you choose, and in bypass RXUSRCLK is driven FROM
+        ## RXOUTCLK, so it is locked to the incoming data by construction. The
+        ## consequence is that RX fabric logic must run on the recovered clock --
+        ## see braid_phy_gty, where the framer's RX half is clocked separately
+        ## from its TX half.
+        ##
+        ## SHOW_REALIGN_COMMA=FALSE is documented in UG578 as "This setting
+        ## reduces RX datapath latency" -- the comma that caused a realignment is
+        ## not brought out to the RX interface. braid_framer never inspects it,
+        ## so this is free.
+        ##
+        ## RX_EQ_MODE=LPM: UG578 recommends LPM for channels with under 14 dB
+        ## loss at Nyquist, and a 1-3 m QSFP28 DAC is well inside that. There is
+        ## no documented latency claim for LPM -- it is here to be measured.
+        ## REVERT TO AUTO if rx_errors moves at all; LPM adaptation is the only
+        ## plausible cause and it is the speculative half of this change.
+        ##
+        ## NOT available to us, despite AMD's fintech blog citing ~13 ns for it:
+        ## a 16-bit INTERNAL datapath. With 8B/10B the internal width must be a
+        ## multiple of 10 and this wizard only offers 40 -- int=20 is rejected at
+        ## every user width (verified). A narrow internal path implies raw mode,
+        ## i.e. owning scrambling and frame sync.
+        ##
+        ## RX_COMMA_ALIGN_WORD is the comma alignment granularity in BYTES. The
+        ## default of 1 lets the aligner drop the comma on ANY byte boundary --
+        ## lane 0, 1, 2 or 3 of our 4-byte word. braid_phy_gty tests lane 0
+        ## only, so with the default the K-character usually lands where it
+        ## never looks and no SOF is ever detected: rx_frames=0 AND rx_errors=0,
+        ## which reads as a dead link rather than a misconfiguration. 4 forces
+        ## the comma onto the word boundary, i.e. always lane 0.
+        ##
+        ## CHANNEL_ENABLE is PART-SPECIFIC and is the one value in this dict that
+        ## did NOT carry over from the probe part (xcu55c accepts X0Y0; the U280
+        ## does not). On xcu280 the valid set is X0Y40-X0Y47 and X1Y0-X1Y15.
+        ## X0Y44 is the QSFP1 quad's lane 0 -- the same channel example 14's
+        ## working build placed gt1_*[0] on, and what u280_shell_zbraid_1.xdc
+        ## LOCs. If you retarget the board, this line must be revisited.
+        set_property -dict [list \
+            CONFIG.GT_TYPE              GTY \
+            CONFIG.CHANNEL_ENABLE       X0Y44 \
+            CONFIG.TX_MASTER_CHANNEL    X0Y44 \
+            CONFIG.RX_MASTER_CHANNEL    X0Y44 \
+            CONFIG.TX_LINE_RATE         10.3125 \
+            CONFIG.RX_LINE_RATE         10.3125 \
+            CONFIG.TX_REFCLK_FREQUENCY  156.25 \
+            CONFIG.RX_REFCLK_FREQUENCY  156.25 \
+            CONFIG.TX_DATA_ENCODING     8B10B \
+            CONFIG.RX_DATA_DECODING     8B10B \
+            CONFIG.TX_USER_DATA_WIDTH   32 \
+            CONFIG.RX_USER_DATA_WIDTH   32 \
+            CONFIG.TX_BUFFER_MODE       0 \
+            CONFIG.RX_BUFFER_MODE       0 \
+            CONFIG.RX_BUFFER_BYPASS_MODE SINGLE \
+            CONFIG.RX_COMMA_P_ENABLE    true \
+            CONFIG.RX_COMMA_M_ENABLE    true \
+            CONFIG.RX_COMMA_PRESET      K28.5 \
+            CONFIG.RX_COMMA_ALIGN_WORD  4 \
+            CONFIG.RX_COMMA_SHOW_REALIGN_ENABLE false \
+            CONFIG.RX_EQ_MODE           LPM \
+            CONFIG.FREERUN_FREQUENCY    100 \
+            CONFIG.ENABLE_OPTIONAL_PORTS {loopback_in rxbufstatus_out} \
+        ] [get_ips braid_gty]
+    }
+
+    ## 32-bit AXI4-Stream CDC FIFOs bridging the GT user clock (257.8125 MHz)
+    ## to Coyote's aclk. Data is 33 bits on the RX side: 32 bits of protocol
+    ## word plus the PHY's 8B/10B error flag as a sideband.
+    ##
+    ## FIFO_MODE 2 is PACKET mode: the FIFO holds a whole frame until tlast is
+    ## written, then releases it. That guarantees the framer can never underrun
+    ## mid-frame (an underrun injects an idle K-word into the payload and the
+    ## receiver correctly discards the frame).
+    ##
+    ## CONSEQUENCE: FIFO_DEPTH MUST EXCEED THE LONGEST FRAME, which is
+    ## 1 header + MAX_WORDS payload + 1 checksum. With N_STAB=1024 that is 34
+    ## words, so depth 32 could never release a full-size frame -- short frames
+    ## worked and long ones failed with ~2 errors each. Depth 64 covers it with
+    ## headroom. If N_STAB grows past 992 bits, raise this again.
+    create_ip -name axis_data_fifo -vendor xilinx.com -library ip \
+        -module_name axis_data_fifo_braid_tx
+    set_property -dict [list \
+        CONFIG.TDATA_NUM_BYTES   {4} \
+        CONFIG.IS_ACLK_ASYNC     {1} \
+        CONFIG.HAS_TLAST         {1} \
+        CONFIG.FIFO_DEPTH        {64} \
+        CONFIG.FIFO_MODE         {2} \
+    ] [get_ips axis_data_fifo_braid_tx]
+
+    ## 33 bits does not fit TDATA_NUM_BYTES, so the RX FIFO carries 5 bytes and
+    ## the error flag rides in bit 32. Wasteful by 7 bits; simpler than a
+    ## separate sideband FIFO that could skew against the data.
+    create_ip -name axis_data_fifo -vendor xilinx.com -library ip \
+        -module_name axis_data_fifo_braid_rx
+    set_property -dict [list \
+        CONFIG.TDATA_NUM_BYTES   {5} \
+        CONFIG.IS_ACLK_ASYNC     {1} \
+        CONFIG.HAS_TLAST         {1} \
+        CONFIG.FIFO_DEPTH        {64} \
+        CONFIG.FIFO_MODE         {2} \
+    ] [get_ips axis_data_fifo_braid_rx]
+}

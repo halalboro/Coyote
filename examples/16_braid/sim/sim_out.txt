@@ -1,0 +1,63 @@
+=== xvlog ===
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/scratch/anubhav/Coyote/examples/16_braid/sim/tb_braid.sv" into library work
+INFO: [VRFC 10-311] analyzing module tb_braid
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/scratch/anubhav/Coyote/examples/16_braid/hw/src/hdl/braid_link_tx.sv" into library work
+INFO: [VRFC 10-311] analyzing module braid_link_tx
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/scratch/anubhav/Coyote/examples/16_braid/hw/src/hdl/braid_link_rx.sv" into library work
+INFO: [VRFC 10-311] analyzing module braid_link_rx
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/scratch/anubhav/Coyote/hw/hdl/braid/braid_framer.sv" into library work
+INFO: [VRFC 10-311] analyzing module braid_framer
+=== xelab ===
+Vivado Simulator v2025.1.0
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+Running: /share/xilinx/2025.1/Vivado/bin/unwrapped/lnx64.o/xelab -debug typical tb_braid -s tb_sim 
+Multi-threading is on. Using 94 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+Completed static elaboration
+Starting simulation data flow analysis
+Completed simulation data flow analysis
+Time Resolution for simulation is 1ps
+Compiling module work.braid_link_tx(N_STAB=1024)
+Compiling module work.braid_link_rx(N_STAB=1024)
+Compiling module work.braid_framer_default
+Compiling module work.tb_braid
+Built simulation snapshot tb_sim
+=== xsim ===
+
+****** xsim v2025.1 (64-bit)
+  **** SW Build 6140274 on Wed May 21 22:58:25 MDT 2025
+  **** IP Build 6138677 on Thu May 22 03:10:11 MDT 2025
+  **** SharedData Build 6139179 on Tue May 20 17:58:58 MDT 2025
+  **** Start of session at: Mon Aug 10 13:37:07 2026
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+    ** Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+
+source xsim.dir/tb_sim/xsim_script.tcl
+# xsim {tb_sim} -autoloadwcfg -runall
+Time resolution is 1 ps
+run -all
+
+=== Test 1: aligned link, 64 rounds ===
+  tx_frames=64 rx_frames=64 rx_errors=0 rx_gaps=0
+  delivered=64 mismatches=0  dbg_b=01
+  PASS
+
+=== Test 2: 1-byte misalignment (must be caught) ===
+  delivered=0 mismatches=0 rx_errors=0 dbg_b=11
+  PASS: nothing delivered (frames rejected)
+
+=== Test 3: protocol-only latency (no GT, no CDC) ===
+  words  bytes   cycles      ns @257.8MHz
+      1      4       10          38.8
+      2      8       11          42.7
+      4     16       13          50.4
+      8     32       17          65.9
+     16     64       25          97.0
+     32    128       41         159.0
+
+Done.
+$finish called at time : 11898 ns : File "/scratch/anubhav/Coyote/examples/16_braid/sim/tb_braid.sv" Line 283
+exit
+INFO: [Common 17-206] Exiting xsim at Mon Aug 10 13:37:10 2026...
