@@ -288,7 +288,26 @@ module cyt_top (
     input  wire[PCIE_GT_BITS-1:0]   pcie_rxn,
     input  wire[PCIE_GT_BITS-1:0]   pcie_rxp,
     output wire[PCIE_GT_BITS-1:0]   pcie_txn,
-    output wire[PCIE_GT_BITS-1:0]   pcie_txp
+    output wire[PCIE_GT_BITS-1:0]   pcie_txp{% if cnfg.fdev == 'v80' and cnfg.en_amc == 1 %},
+
+    // V80 onboard DDR4 PHY pins (4 GB, axi_noc_mc_ddr4_0 in cr_ddr4_v80.tcl).
+    // Names mirror the BD wrapper / XDC: CH0_DDR4_0_0_* and sys_clk0_0_*.
+    (* io_buffer_type = "none" *) input  wire[0:0]   sys_clk0_0_clk_n,
+    (* io_buffer_type = "none" *) input  wire[0:0]   sys_clk0_0_clk_p,
+    (* io_buffer_type = "none" *) output wire[0:0]   CH0_DDR4_0_0_act_n,
+    (* io_buffer_type = "none" *) output wire[16:0]  CH0_DDR4_0_0_adr,
+    (* io_buffer_type = "none" *) output wire[1:0]   CH0_DDR4_0_0_ba,
+    (* io_buffer_type = "none" *) output wire[0:0]   CH0_DDR4_0_0_bg,
+    (* io_buffer_type = "none" *) output wire[0:0]   CH0_DDR4_0_0_ck_c,
+    (* io_buffer_type = "none" *) output wire[0:0]   CH0_DDR4_0_0_ck_t,
+    (* io_buffer_type = "none" *) output wire[0:0]   CH0_DDR4_0_0_cke,
+    (* io_buffer_type = "none" *) output wire[0:0]   CH0_DDR4_0_0_cs_n,
+    (* io_buffer_type = "none" *) inout  wire[8:0]   CH0_DDR4_0_0_dm_n,
+    (* io_buffer_type = "none" *) inout  wire[71:0]  CH0_DDR4_0_0_dq,
+    (* io_buffer_type = "none" *) inout  wire[8:0]   CH0_DDR4_0_0_dqs_c,
+    (* io_buffer_type = "none" *) inout  wire[8:0]   CH0_DDR4_0_0_dqs_t,
+    (* io_buffer_type = "none" *) output wire[0:0]   CH0_DDR4_0_0_odt,
+    (* io_buffer_type = "none" *) output wire[0:0]   CH0_DDR4_0_0_reset_n{% endif %}
     {% endif %}
 );
 
@@ -411,7 +430,25 @@ module cyt_top (
         .pcie_rxn(pcie_rxn),
         .pcie_rxp(pcie_rxp),
         .pcie_txn(pcie_txn),
-        .pcie_txp(pcie_txp)
+        .pcie_txp(pcie_txp){% if cnfg.fdev == 'v80' and cnfg.en_amc == 1 %},
+
+        // V80 onboard DDR4 PHY pass-through
+        .sys_clk0_0_clk_n(sys_clk0_0_clk_n),
+        .sys_clk0_0_clk_p(sys_clk0_0_clk_p),
+        .CH0_DDR4_0_0_act_n(CH0_DDR4_0_0_act_n),
+        .CH0_DDR4_0_0_adr(CH0_DDR4_0_0_adr),
+        .CH0_DDR4_0_0_ba(CH0_DDR4_0_0_ba),
+        .CH0_DDR4_0_0_bg(CH0_DDR4_0_0_bg),
+        .CH0_DDR4_0_0_ck_c(CH0_DDR4_0_0_ck_c),
+        .CH0_DDR4_0_0_ck_t(CH0_DDR4_0_0_ck_t),
+        .CH0_DDR4_0_0_cke(CH0_DDR4_0_0_cke),
+        .CH0_DDR4_0_0_cs_n(CH0_DDR4_0_0_cs_n),
+        .CH0_DDR4_0_0_dm_n(CH0_DDR4_0_0_dm_n),
+        .CH0_DDR4_0_0_dq(CH0_DDR4_0_0_dq),
+        .CH0_DDR4_0_0_dqs_c(CH0_DDR4_0_0_dqs_c),
+        .CH0_DDR4_0_0_dqs_t(CH0_DDR4_0_0_dqs_t),
+        .CH0_DDR4_0_0_odt(CH0_DDR4_0_0_odt),
+        .CH0_DDR4_0_0_reset_n(CH0_DDR4_0_0_reset_n){% endif %}
     );
 {% endif %}
 

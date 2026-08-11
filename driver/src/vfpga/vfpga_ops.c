@@ -615,6 +615,32 @@ int vfpga_dev_mmap(struct file *file, struct vm_area_struct *vma) {
         }
     }
 
+    // Memory map the AMC (AVED management controller) DDR4 shared-memory window,
+    // so a host app can reach the AMC's GCQ mailbox ring + partition table while
+    // the driver stays loaded — i.e. use the vFPGA and the AMC together, without
+    // detaching the driver to raw-mmap BAR4. AMC-only V80 bitstreams; harmless
+    // (reads 0xFF) otherwise.
+    if (vma->vm_pgoff == MMAP_AMC) {
+        uint64_t amc_phys = device->bd_data->bar_phys_addr[BAR_SHELL_CONFIG] + AMC_DDR_OFFS;
+        dbg_info(
+            "fpga dev. %d, memory mapping AMC DDR window at %llx of size %x\n",
+            device->id, amc_phys, AMC_DDR_SIZE
+        );
+        int ret_val = remap_pfn_range(
+            vma,
+            vma->vm_start,
+            amc_phys >> PAGE_SHIFT,
+            AMC_DDR_SIZE,
+            vma->vm_page_prot
+        );
+        if (ret_val) {
+            pr_warn("remap_pfn_range failed for AMC DDR window, ret_val: %d\n", ret_val);
+            return -EIO;
+        } else {
+            return 0;
+        }
+    }
+
     // Memory map vFPGA config (non-AVX) region (cnfg_slave)
     if (vma->vm_pgoff == MMAP_CNFG) {
         dbg_info(

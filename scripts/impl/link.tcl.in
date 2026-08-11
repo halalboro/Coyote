@@ -50,7 +50,17 @@ if {$cfg(build_static) eq 1} {
     add_files "$dcp_dir/static/static_synthed.dcp"
     add_files -fileset [get_filesets constrs_1] "$hw_dir/constraints/$cfg(fdev)/static/impl"
     if {$cfg(en_shell_pblock) eq 1} {
-        add_files -fileset [get_filesets constrs_1] "$hw_dir/constraints/$cfg(fdev)/fplan"
+        # Coyote AMC bringup: the shared V80 static floorplan (constraints/v80/fplan)
+        # is the vFPGA-mesh "Strategy B" layout, which strands the X0-column
+        # axi_noc_0 M00 NSU (NOC_NSU512_X0Y4) GND tie-off and fails route_design.
+        # The N=1 AMC build (EN_PR=0) needs none of the mesh, so it uses the
+        # pre-mesh "Strategy A" floorplan (constraints/v80/fplan_amc) that routed
+        # cleanly. See hw/constraints/v80/fplan_amc/v80_static_floorplan.xdc.
+        if {$cfg(fdev) eq "v80" && $cfg(en_amc) eq 1} {
+            add_files -fileset [get_filesets constrs_1] "$hw_dir/constraints/$cfg(fdev)/fplan_amc"
+        } else {
+            add_files -fileset [get_filesets constrs_1] "$hw_dir/constraints/$cfg(fdev)/fplan"
+        }
     }
 } else {
     if {$cfg(fpga_arch) eq "versal"} {

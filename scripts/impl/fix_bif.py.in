@@ -1,34 +1,69 @@
 ######################################################################################
 # This file is part of the Coyote <https://github.com/fpgasystems/Coyote>
-# 
+#
 # MIT Licence
 # Copyright (c) 2026, Systems Group, ETH Zurich
 # All rights reserved.
-# 
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
 ######################################################################################
 
-# Helper script for Versal bitgen, adding boot_device { pcie } to the top-level .bif file
+# Helper script for Versal bitgen.
+#
+# Two responsibilities:
+#   1) Insert `boot_device { pcie }` into the `bitstream_master` section so the
+#      generated PDI is bootable over PCIe partial reconfiguration.
+#   2) (EN_AMC=1) Emit an AVED-style "combine" BIF that appends AMC firmware to
+#      an already-generated base PDI as a delayed-handoff RPU subsystem image.
+#
+# Why a two-step combine (base PDI, then combine) rather than injecting amc.elf
+# into the base BIF directly:
+#
+#   AMC runs on R5-0 and needs its TCM banks. TCM is granted when the PLM brings
+#   the R5 up as part of subsystem 0x1c000000. If amc.elf is loaded *inline*
+#   during the main boot, the R5 handoff happens before the base platform (RPU
+#   power domain, subsystem tables) is fully up, so XPm_RequestDevice(TCM_0_A)
+#   fails and boot aborts — first as PLM 0x347 (bare partition, no subsystem
+#   binding), then as 0x33C/0x801 (bound but configured too early).
+#
+#   AVED avoids this by fully booting a base PDI, then handing off amc.elf as a
+#   separate `delay_handoff` RPU-subsystem image (fpt/pdi_combine.bif):
+#       image { { type=bootimage, file=<base>.pdi } }
+#       image { id=0x1c000000, name=rpu_subsystem, delay_handoff
+#               { core=r5-0, file=amc.elf } }
+#   The delayed handoff runs only after the base boot completes, so the RPU/TCM
+#   are ready. We reproduce that exactly.
+#
+# Usage:
+#   python fix_bif.py <bif_path>
+#       Insert boot_device { pcie } into <bif_path> (base BIF prep).
+#
+#   python fix_bif.py --combine <out_bif> <base_pdi> <amc_elf>
+#       Write an AVED-style combine BIF to <out_bif>. Paths are BIF-relative
+#       (relative to bootgen's CWD, i.e. build_dir), matching the convention
+#       used for the base PDI's own partition file references.
 
+import os
 import sys
 
+# AVED fpt/pdi_combine.bif, reproduced. `id = 0x1c000000` binds amc.elf to the
+# default subsystem that owns the R5 TCM; `delay_handoff` defers R5 start until
+# the base PDI has fully booted.
+COMBINE_BIF_TEMPLATE = """all:
+{{
+    image
+    {{
+        {{ type=bootimage, file={base_pdi} }}
+    }}
+    image
+    {{
+        id = 0x1c000000, name=rpu_subsystem, delay_handoff
+        {{ core=r5-0, file={amc_elf} }}
+    }}
+}}
+"""
+
+
 def insert_boot_device(path):
+    """Insert `boot_device { pcie }` after the id line inside bitstream_master."""
     with open(path, 'r') as f:
         lines = f.readlines()
 
@@ -36,15 +71,12 @@ def insert_boot_device(path):
     inserted = False
     found_master_section = False
 
-    # Iterate through file, until bitstream_master section is found
     for line in lines:
         out.append(line)
 
-        # Detect start of bitstream_master section
         if 'bitstream_master:' in line:
             found_master_section = True
-        
-        # Insert after the id line inside bitstream_master
+
         if found_master_section and not inserted and 'id =' in line:
             out.append(' boot_device { pcie }\n')
             inserted = True
@@ -52,9 +84,33 @@ def insert_boot_device(path):
     with open(path, 'w') as f:
         f.writelines(out)
 
-if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        print('Usage: python add_boot_device.py <file>')
-        sys.exit(1)
 
-    insert_boot_device(sys.argv[1])
+def write_combine_bif(out_path, base_pdi, amc_elf):
+    """Write an AVED-style combine BIF (base PDI + amc.elf as RPU subsystem)."""
+    with open(out_path, 'w') as f:
+        f.write(COMBINE_BIF_TEMPLATE.format(base_pdi=base_pdi, amc_elf=amc_elf))
+    print('fix_bif.py: wrote combine BIF ' + out_path +
+          ' (base=' + base_pdi + ', amc=' + amc_elf + ')')
+
+
+if __name__ == '__main__':
+    if len(sys.argv) == 5 and sys.argv[1] == '--combine':
+        _, _, out_bif, base_pdi, amc_elf = sys.argv
+        # Best-effort existence check for the amc.elf (bootgen fails cryptically
+        # on a missing file). base_pdi may not exist yet at check time.
+        if not os.path.isabs(amc_elf):
+            bif_dir = os.path.dirname(os.path.abspath(out_bif))
+            check = os.path.join(os.path.dirname(bif_dir), amc_elf)
+            if not os.path.isfile(check):
+                print('fix_bif.py: WARNING: AMC file not found at ' + check +
+                      ' (bootgen will fail if path is wrong)')
+        write_combine_bif(out_bif, base_pdi, amc_elf)
+        sys.exit(0)
+
+    if len(sys.argv) == 2:
+        insert_boot_device(sys.argv[1])
+        sys.exit(0)
+
+    print('Usage: python fix_bif.py <bif_path>')
+    print('       python fix_bif.py --combine <out_bif> <base_pdi> <amc_elf>')
+    sys.exit(1)

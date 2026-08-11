@@ -52,4 +52,8 @@ __pycache__
 docs/docs-sw/
 docs/docs-driver/
 NOTES.md
-fw/
+# fw/ is tracked (AMC firmware sources), but its generated Vitis BSP is not
+fw/amc_v80/amc_bsp/
+# AMC example: local PDI/ELF backups, not for git
+examples/15_amc_ping/_prevfunc_backup/
+*.stub.bak

@@ -1,0 +1,26 @@
+AVED AMC firmware vendored into Coyote-upstream.
+
+Source:
+  /scratch/felix/aved/AVED/fw/AMC
+
+Upstream:
+  https://github.com/Xilinx/AVED  (release amd_v80_gen5x8_25.1)
+
+Profile target:
+  v80, FreeRTOS on Cortex-R5F (RPU0)
+
+Vendored: 2026-05-14 (Coyote AMC Phase A bringup).
+
+LICENSE: MIT (AVED AMC) — compatible with Coyote (MIT).
+
+Coyote-specific changes vs. upstream AVED AMC (cumulative list):
+
+  src/profiles/v80/profile_hal.h
+    - HAL_RPU_SHARED_MEMORY_BASE_ADDR : 0x38000000 -> 0x00100000
+    - HAL_RPU_SHARED_MEMORY_END_ADDR  : 0x3FFFF000 -> 0x004FF000
+    Reason: shared-memory region must fit inside a PCIe-visible BAR4 window,
+    and Coyote's BAR4 is 256 MB total (vs AVED's larger mgmt PF aperture).
+    The 4 MB region at 0x00100000 leaves room for AMC's partition table,
+    ring buffer, status block, and log message buffer.
+
+Patches should be tracked here and ideally upstreamed back to AVED once stable.

@@ -1,0 +1,15 @@
+# Live GCQ/ring state read from running AMC (V80, 2026-08-10) — ground truth for the host client.
+# Read via: rmmod coyote_driver; setpci -s 61:00.0 COMMAND=0x06; mmap resource4 (full 0x10000000, PROT_READ)
+
+GCQ region  @ BAR4+0x08000000 (gcq_m2r/S00, host producer side):
+  +0x00: 000ff1ce  00000000  00000001  00000000    <- 0x000FF1CE = GCQ identity magic
+  +0x10: 00000001  00000000  54c294ab  00000000
+  +0x20: 00000105  ...                              <- 0x105 version
+  +0x30: 00000001  ...
+
+DDR ring buffer @ BAR4+0x0A101000 (shared_mem 0x100000 + 0x1000):
+  +0x00: 5847513f  00010001  00000004  0000002c    <- 0x5847513F ring magic, 0x00010001 ver
+  +0x10: 00000200  0000082c  00000000  00000000    <- geometry (slot/size/count/offsets)
+
+Host reaches GCQ regs at BAR4+0x08000000; ring payload in DDR at BAR4+0x0A101000.
+Next: decode field meanings from gcq_ring.h / gcq_regmap.h (agent), then implement submit/complete.

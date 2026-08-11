@@ -47,7 +47,14 @@ puts "[color $clr_flow "**"]"
 set proj_dir "$build_dir/$project\_static"
 create_project $project $proj_dir -part $part -force
 set proj [current_project]
-set_property IP_REPO_PATHS $lib_dir [current_fileset]
+# IP repo paths: start with Coyote's own iprepo. When EN_AMC=1 on V80, also
+# include the AVED iprepo so cr_pci.tcl can instantiate cmd_queue (GCQ).
+set ip_repos [list $lib_dir]
+if {$cfg(en_amc) eq 1} {
+    lappend ip_repos $cfg(aved_iprepo)
+    puts "[color $clr_flow "** EN_AMC=1, adding AVED iprepo: $cfg(aved_iprepo)"]"
+}
+set_property IP_REPO_PATHS $ip_repos [current_fileset]
 update_ip_catalog
 
 set_msg_config -id {Vivado 12-2924} -suppress

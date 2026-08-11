@@ -107,6 +107,8 @@ set cfg(en_net_0)               ${EN_NET_0}
 set cfg(en_net_1)               ${EN_NET_1}
 set cfg(en_net)                 ${EN_NET}   
 set cfg(qsfp)                   ${QSFP}
+set cfg(en_amc)                 ${EN_AMC}
+set cfg(aved_iprepo)            "${AVED_IPREPO_PATH}"
 set cfg(pmtu)                   ${PMTU_BYTES}
 set cfg(cores)                  ${COMP_CORES}
 set cfg(build_opt)              ${BUILD_OPT}

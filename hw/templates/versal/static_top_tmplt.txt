@@ -63,14 +63,33 @@ module static_top (
     input  wire[PCIE_GT_BITS-1:0]           pcie_rxn,
     input  wire[PCIE_GT_BITS-1:0]           pcie_rxp,
     output wire[PCIE_GT_BITS-1:0]           pcie_txn,
-    output wire[PCIE_GT_BITS-1:0]           pcie_txp
+    output wire[PCIE_GT_BITS-1:0]           pcie_txp{% if cnfg.fdev == 'v80' and cnfg.en_amc == 1 %},
+
+    // V80 onboard DDR4 (4 GB, axi_noc_mc_ddr4_0) — only when EN_AMC=1.
+    // Port names mirror the BD wrapper: CH0_DDR4_0_0_* / sys_clk0_0_*.
+    input  wire[0:0]                        sys_clk0_0_clk_n,
+    input  wire[0:0]                        sys_clk0_0_clk_p,
+    output wire[0:0]                        CH0_DDR4_0_0_act_n,
+    output wire[16:0]                       CH0_DDR4_0_0_adr,
+    output wire[1:0]                        CH0_DDR4_0_0_ba,
+    output wire[0:0]                        CH0_DDR4_0_0_bg,
+    output wire[0:0]                        CH0_DDR4_0_0_ck_c,
+    output wire[0:0]                        CH0_DDR4_0_0_ck_t,
+    output wire[0:0]                        CH0_DDR4_0_0_cke,
+    output wire[0:0]                        CH0_DDR4_0_0_cs_n,
+    inout  wire[8:0]                        CH0_DDR4_0_0_dm_n,
+    inout  wire[71:0]                       CH0_DDR4_0_0_dq,
+    inout  wire[8:0]                        CH0_DDR4_0_0_dqs_c,
+    inout  wire[8:0]                        CH0_DDR4_0_0_dqs_t,
+    output wire[0:0]                        CH0_DDR4_0_0_odt,
+    output wire[0:0]                        CH0_DDR4_0_0_reset_n{% endif %}
 );
 
     // Clocks and resets
     logic sresetn;
 
     // Interrupts
-    logic [15:0] usr_irq;
+    logic [N_USR_IRQ:0] usr_irq;
 
     // AXI static config & control
     AXI4L #(.AXI4L_DATA_BITS(32), .AXI4L_ADDR_BITS(32)) axi_cnfg_int ();
@@ -415,7 +434,25 @@ module static_top (
         .eos_resetn(eos_resetn),
         .eos_pmc(eos_pmc),
         .xclk(xclk),
-        .xresetn(xresetn)
+        .xresetn(xresetn){% if cnfg.fdev == 'v80' and cnfg.en_amc == 1 %},
+
+        // V80 onboard DDR4 PHY pass-through
+        .sys_clk0_0_clk_n(sys_clk0_0_clk_n),
+        .sys_clk0_0_clk_p(sys_clk0_0_clk_p),
+        .CH0_DDR4_0_0_act_n(CH0_DDR4_0_0_act_n),
+        .CH0_DDR4_0_0_adr(CH0_DDR4_0_0_adr),
+        .CH0_DDR4_0_0_ba(CH0_DDR4_0_0_ba),
+        .CH0_DDR4_0_0_bg(CH0_DDR4_0_0_bg),
+        .CH0_DDR4_0_0_ck_c(CH0_DDR4_0_0_ck_c),
+        .CH0_DDR4_0_0_ck_t(CH0_DDR4_0_0_ck_t),
+        .CH0_DDR4_0_0_cke(CH0_DDR4_0_0_cke),
+        .CH0_DDR4_0_0_cs_n(CH0_DDR4_0_0_cs_n),
+        .CH0_DDR4_0_0_dm_n(CH0_DDR4_0_0_dm_n),
+        .CH0_DDR4_0_0_dq(CH0_DDR4_0_0_dq),
+        .CH0_DDR4_0_0_dqs_c(CH0_DDR4_0_0_dqs_c),
+        .CH0_DDR4_0_0_dqs_t(CH0_DDR4_0_0_dqs_t),
+        .CH0_DDR4_0_0_odt(CH0_DDR4_0_0_odt),
+        .CH0_DDR4_0_0_reset_n(CH0_DDR4_0_0_reset_n){% endif %}
     );
 
     // The NoC addresses are 64-bit long and start 0x201_0000_0000

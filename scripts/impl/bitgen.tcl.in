@@ -54,14 +54,49 @@ if {$cfg(en_pr) eq 0} {
             write_device_image -force -no_partial_pdifile "$bit_dir/cyt_top.pdi"
             write_debug_probes -force -no_partial_ltxfile "$bit_dir/cyt_top.ltx"
 
+            # AMC firmware integration (V80 + EN_AMC=1): emit XSA from the current
+            # routed checkpoint so AMC's build flow can generate its BSP from the
+            # hardware platform, then build amc.elf and stage it where fix_bif.py
+            # will pick it up.
+            if {$cfg(en_amc) eq 1} {
+                puts "[color $clr_flow "** Exporting hardware platform (XSA) for AMC firmware build ..."]"
+                write_hw_platform -fixed -force -file "$bit_dir/cyt_top.xsa"
+
+                file mkdir "$bit_dir/static_files"
+                puts "[color $clr_flow "** Building AMC firmware (amc.elf) ..."]"
+                exec env CYT_DIR=$root_dir bash \
+                    "$build_dir/build_amc.sh" \
+                    "$bit_dir/cyt_top.xsa" \
+                    "$bit_dir/static_files/amc.elf" \
+                    >@ stdout 2>@ stderr
+            }
+
             # On Versal devices, partial reconfiguration can be done through PCIe/QDMA
             # However, to do so, boot_device must be set to PCIe in the BIF file
             # As of 2025.1, it's not possible to configure the boot_device to PCIe directly through Vivado TCL commands
             # Therefore, a utility script 'fix_bif.py' is provided to modify the BIF file accordingly
             # Once the modified BIF file is created, bootgen is used to generate the "new" PDI
             exec rm "$bit_dir/cyt_top.pdi"
+            # Prepare the base BIF (adds boot_device { pcie } for PCIe boot).
             exec python fix_bif.py "$bit_dir/cyt_top.bif"
-            exec bootgen -arch versal -image "$bit_dir/cyt_top.bif" -w -o "$bit_dir/cyt_top.pdi"
+
+            if {$cfg(en_amc) eq 1} {
+                # AVED-style two-step PDI assembly for AMC on R5-0:
+                #   1) Generate the base PDI (shell only, no AMC) from cyt_top.bif.
+                #   2) Combine it with amc.elf as a delayed-handoff RPU-subsystem
+                #      image (id 0x1c000000), so the R5 is handed off only after
+                #      the base platform (RPU power domain / subsystem tables) has
+                #      fully booted and its TCM banks can be granted.
+                # Injecting amc.elf inline instead fails: PLM 0x347 (no subsystem
+                # binding) or 0x33C/0x801 (bound but handed off too early). See
+                # fix_bif.py and AVED fpt/pdi_combine.bif.
+                exec bootgen -arch versal -image "$bit_dir/cyt_top.bif" -w -o "$bit_dir/cyt_top_base.pdi"
+                exec python fix_bif.py --combine "$bit_dir/cyt_top_combine.bif" \
+                    "bitstreams/cyt_top_base.pdi" "bitstreams/static_files/amc.elf"
+                exec bootgen -arch versal -image "$bit_dir/cyt_top_combine.bif" -w -o "$bit_dir/cyt_top.pdi"
+            } else {
+                exec bootgen -arch versal -image "$bit_dir/cyt_top.bif" -w -o "$bit_dir/cyt_top.pdi"
+            }
         } else {
             puts "ERROR: Unsupported FPGA architecture: $cfg(fpga_arch)"
             exit 1

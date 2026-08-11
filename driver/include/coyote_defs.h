@@ -392,6 +392,14 @@ extern bool en_hmm;
 #define MMAP_CNFG 0x1
 #define MMAP_CNFG_AVX 0x2
 #define MMAP_CTRL 0x3
+// AMC (AVED management controller) shared-memory window. Maps the V80's DDR4
+// aperture in BAR_SHELL_CONFIG (BAR4) so a host app can reach the AMC's GCQ
+// mailbox ring + partition table while the driver stays loaded (i.e. use the
+// vFPGA and the AMC together, no BAR-detach hack). Only meaningful on an
+// EN_AMC=1 V80 bitstream; on others the window reads back 0xFF (harmless).
+#define MMAP_AMC 0x4
+#define AMC_DDR_OFFS 0x0A000000  /* AMC DDR4 window offset within BAR_SHELL_CONFIG */
+#define AMC_DDR_SIZE 0x02000000  /* 32 MB (partition table @ +0x100000, ring @ +0x101000) */
 #define MMAP_RECONFIG 0x100
 
 // vFPGA IOCTL calls; see vfpga_ops.c for more details
