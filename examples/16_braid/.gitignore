@@ -1,0 +1,10 @@
+hw/build/
+sim/xsim.dir/
+sim/*.log
+sim/*.jou
+sim/*.pb
+sim/*.wdb
+sim/*_out.txt
+sw/build/
+sim/.srcs/
+sim/.Xil/

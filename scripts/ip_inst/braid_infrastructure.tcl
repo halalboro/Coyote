@@ -3,8 +3,22 @@
 ##
 ## Gated by cfg(en_braid_gty). Consumed by hw/hdl/braid/braid_gty_wrapper.sv.
 ##
-## One GTY lane, 10.3125 Gbps, 8B/10B (no 64B/66B gearbox), 32-bit user
-## datapath at 257.8125 MHz, 156.25 MHz reference, TX buffer bypassed.
+## One GTY lane, 15.625 Gbps, 8B/10B (no 64B/66B gearbox), 32-bit user
+## datapath at 390.625 MHz, 156.25 MHz reference, TX and RX buffers bypassed.
+##
+## WHY 15.625 AND NOT MORE. 156.25 x 100. Probed exhaustively on GTYE4:
+##   - GTY 8B/10B tops out at 16.375 Gbps. 17.5 and above are rejected.
+##   - The line rate must be an exact integer multiple of the board reference,
+##     which `braid clock` measured at 156.25 MHz (257.808 read against a
+##     257.8125 prediction). x100 is the largest multiple under the ceiling.
+##   - 25.78125 Gbps needs RAW encoding AND a 64-bit datapath AND a
+##     161.1328125 MHz reference. Not reachable, and not worth it: raw buys
+##     I=32 instead of 40 and no 25% line overhead, both 1.25x, both exactly
+##     cancelled by needing a 1.25x lower rate to hold the same fabric clock.
+##     8B/10B at 15.625 and raw at 12.5 both land on 79.9 ns predicted.
+##
+## RX_COMMA_ALIGN_WORD STAYS AT 4. It is the datapath width in BYTES, and the
+## datapath is still 32 bits. Getting this wrong cost three build cycles.
 ##############################################################################
 
 if {$cfg(en_braid_gty) eq 1} {
@@ -67,8 +81,8 @@ if {$cfg(en_braid_gty) eq 1} {
             CONFIG.CHANNEL_ENABLE       X0Y44 \
             CONFIG.TX_MASTER_CHANNEL    X0Y44 \
             CONFIG.RX_MASTER_CHANNEL    X0Y44 \
-            CONFIG.TX_LINE_RATE         10.3125 \
-            CONFIG.RX_LINE_RATE         10.3125 \
+            CONFIG.TX_LINE_RATE         15.625 \
+            CONFIG.RX_LINE_RATE         15.625 \
             CONFIG.TX_REFCLK_FREQUENCY  156.25 \
             CONFIG.RX_REFCLK_FREQUENCY  156.25 \
             CONFIG.TX_DATA_ENCODING     8B10B \

@@ -53,10 +53,20 @@ module braid_phy_gty (
     input  logic          phy_tx_valid,
     input  logic          phy_tx_last,
     output logic          phy_tx_ready,
+    // Header, checksum and frame type ride in the framer's marker and trailer
+    // words rather than in words of their own. Passed straight through; this
+    // module does not look at them.
+    input  logic [23:0]   phy_tx_hdr,
+    input  logic [23:0]   phy_tx_cks,
+    input  logic [1:0]    phy_tx_type,
     output logic [31:0]   phy_rx_data,
     output logic          phy_rx_valid,
-    output logic          phy_rx_last,
+    output logic          phy_rx_eof,
     output logic          phy_rx_err,
+    output logic [23:0]   phy_rx_hdr,
+    output logic          phy_rx_sof,
+    output logic [1:0]    phy_rx_type,
+    output logic [23:0]   phy_rx_cks,
 
     // ---- GT pins ----
     input  logic          gt_refclk,     // from IBUFDS_GTE4, 156.25 MHz
@@ -275,10 +285,17 @@ module braid_phy_gty (
         .phy_tx_valid (phy_tx_valid),
         .phy_tx_last  (phy_tx_last),
         .phy_tx_ready (phy_tx_ready),
+        .phy_tx_hdr   (phy_tx_hdr),
+        .phy_tx_cks   (phy_tx_cks),
+        .phy_tx_type  (phy_tx_type),
         .phy_rx_data  (phy_rx_data),
         .phy_rx_valid (phy_rx_valid),
-        .phy_rx_last  (phy_rx_last),
+        .phy_rx_eof   (phy_rx_eof),
         .phy_rx_err   (phy_rx_err),
+        .phy_rx_hdr   (phy_rx_hdr),
+        .phy_rx_sof   (phy_rx_sof),
+        .phy_rx_type  (phy_rx_type),
+        .phy_rx_cks   (phy_rx_cks),
         .gt_txdata    (gt_txdata),
         .gt_txctrl2   (gt_txctrl2),
         .gt_rxdata    (gt_rxdata),

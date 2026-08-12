@@ -8,17 +8,38 @@
  * milliseconds. Keep it that way -- if the framing is ever copied back into
  * braid_phy_gty, the simulation stops testing what is actually synthesised.
  *
+ * STREAMING FRAME LAYOUT. A frame is:
+ *
+ *     MARKER   {round[15:0], n_words[7:0], K}     one word
+ *     payload  n_words data words
+ *     TRAILER  {checksum[23:0], K29.7}             one word
+ *
+ * There is no separate header word and no separate checksum word. Both used to
+ * exist and both were waste: a control word carries ONE K-character, in byte
+ * lane 0, leaving three data bytes that were being filled with D16.2 padding.
+ * The header now rides in the marker's spare bytes and the checksum in the
+ * trailer's, so a frame is two words shorter and the payload starts one word
+ * sooner.
+ *
+ * The frame TYPE is the marker's K-character rather than a field, which is what
+ * frees the 24 bits:
+ *     K27.7 (0xFB) -> syndrome, dense bitmap
+ *     K28.3 (0x7C) -> syndrome, sparse (a list of fired stabilizer positions)
+ *     K28.2 (0x5C) -> correction
+ * None is a comma (only K28.1/K28.5/K28.7 are), so none can be mistaken for the
+ * idle word by the alignment logic.
+ *
+ * THE FRAMER DOES NOT INTERPRET THE PAYLOAD, and neither do the link cores.
+ * Dense and sparse differ only in what the bytes mean, which is an agreement
+ * between the syndrome source and the decoder. The type bit exists so a
+ * receiver can tell them apart when both are in use on one link -- it is not
+ * what makes sparse cheaper. Sparse is cheaper because it needs fewer words,
+ * and the link already sends however many words it is given.
+ *
  * TWO CLOCK DOMAINS. The TX half runs on the local transmit user clock; the RX
  * half runs on the RECOVERED clock. That is a consequence of bypassing the RX
- * elastic buffer: the buffer is what would otherwise bridge the recovered clock
- * to a clock of your choosing, and bypassing it is the single largest GT
- * latency saving available. The two halves share no state -- the TX and RX FSMs
- * were always independent -- so this costs nothing but the port list.
- *
- * Bypass does NOT require the two ends to share a reference clock: RXUSRCLK is
- * driven from RXOUTCLK, so it is frequency-locked to the incoming data by
- * construction. Onward crossing into aclk is handled by the async FIFO that was
- * already there.
+ * elastic buffer, which is the single largest GT latency saving available. The
+ * two halves share no state, so this costs nothing but the port list.
  *
  * Control words carry exactly ONE K-character, in byte lane 0. An idle of
  * {4{K28.5}} would put a comma in every lane and the aligner -- which locks the
@@ -38,6 +59,11 @@ module braid_framer (
     input  logic          phy_tx_valid,
     input  logic          phy_tx_last,
     output logic          phy_tx_ready,
+    // Carried in the marker and trailer rather than in words of their own.
+    // hdr must be stable for the whole frame; cks only on the final cycle.
+    input  logic [23:0]   phy_tx_hdr,     // {round[15:0], n_words[7:0]}
+    input  logic [23:0]   phy_tx_cks,
+    input  logic [1:0]    phy_tx_type,    // 0=dense syn, 1=correction, 2=sparse syn
 
     output logic [31:0]   gt_txdata,
     output logic [7:0]    gt_txctrl2,     // TXCHARISK
@@ -49,8 +75,12 @@ module braid_framer (
 
     output logic [31:0]   phy_rx_data,
     output logic          phy_rx_valid,
-    output logic          phy_rx_last,
+    output logic          phy_rx_eof,     // one-cycle strobe AFTER the last word
     output logic          phy_rx_err,
+    output logic [23:0]   phy_rx_hdr,     // held from phy_rx_sof to the next SOF
+    output logic          phy_rx_sof,
+    output logic [1:0]    phy_rx_type,
+    output logic [23:0]   phy_rx_cks,     // valid with phy_rx_eof
 
     input  logic [31:0]   gt_rxdata,
     input  logic [15:0]   gt_rxctrl0,     // RXCHARISK
@@ -64,58 +94,57 @@ module braid_framer (
 );
 
     localparam logic [7:0] K28_5 = 8'hBC;   // comma / idle
-    localparam logic [7:0] K27_7 = 8'hFB;   // start of frame
+    localparam logic [7:0] K27_7 = 8'hFB;   // start of frame, syndrome
+    localparam logic [7:0] K28_2 = 8'h5C;   // start of frame, correction
+    localparam logic [7:0] K28_3 = 8'h7C;   // start of frame, sparse syndrome
     localparam logic [7:0] K29_7 = 8'hFD;   // end of frame
     localparam logic [7:0] D16_2 = 8'h50;   // neutral filler, not a comma
 
     localparam logic [31:0] W_IDLE = {D16_2, D16_2, D16_2, K28_5};
-    localparam logic [31:0] W_SOF  = {D16_2, D16_2, D16_2, K27_7};
-    localparam logic [31:0] W_EOF  = {D16_2, D16_2, D16_2, K29_7};
     localparam logic [7:0]  CTRL_K = 8'b0000_0001;   // K in lane 0 only
 
     // ================================================================ TX
-    typedef enum logic [1:0] { T_IDLE, T_SOF, T_DATA, T_EOF } tx_e;
+    typedef enum logic [1:0] { T_IDLE, T_DATA, T_EOF } tx_e;
     tx_e tx_state;
+
+    wire [7:0] k_sof = (phy_tx_type == 2'd1) ? K28_2
+                     : (phy_tx_type == 2'd2) ? K28_3 : K27_7;
+    wire [31:0] w_marker  = {phy_tx_hdr, k_sof};
+    wire [31:0] w_trailer = {phy_tx_cks, K29_7};
+
+    // COMBINATIONAL datapath, registered state. The output register that used
+    // to sit here was back to back with braid_link_tx's own output register,
+    // so every word paid two stages to cross one module boundary. gt_txdata
+    // feeds the GT's TXDATA input, which registers it inside the transceiver --
+    // combinational into a register is the normal arrangement, not a shortcut.
+    always_comb begin
+        gt_txctrl2 = CTRL_K;
+        case (tx_state)
+            T_IDLE:  gt_txdata = (rstn_tx && link_up_tx && phy_tx_valid) ? w_marker : W_IDLE;
+            T_DATA:  begin
+                if (phy_tx_valid) begin
+                    gt_txdata  = phy_tx_data;
+                    // Must match: 0x0F here would mark the payload bytes as
+                    // control characters and the far end would see
+                    // not-in-table errors for the whole frame.
+                    gt_txctrl2 = 8'h00;
+                end else begin
+                    gt_txdata  = W_IDLE;
+                end
+            end
+            T_EOF:   gt_txdata = w_trailer;
+            default: gt_txdata = W_IDLE;
+        endcase
+    end
 
     always_ff @(posedge clk_tx) begin
         if (!rstn_tx) begin
-            tx_state   <= T_IDLE;
-            gt_txdata  <= W_IDLE;
-            // Must match W_IDLE's single K. 8'h0F here would mark the three
-            // D16.2 filler bytes as control characters, and 0x50 is not a valid
-            // K-code, so the far end would see not-in-table errors for as long
-            // as reset was held.
-            gt_txctrl2 <= CTRL_K;
+            tx_state <= T_IDLE;
         end else begin
             case (tx_state)
-                T_IDLE: begin
-                    gt_txdata  <= W_IDLE;
-                    gt_txctrl2 <= CTRL_K;
-                    if (link_up_tx && phy_tx_valid) tx_state <= T_SOF;
-                end
-                T_SOF: begin
-                    gt_txdata  <= W_SOF;
-                    gt_txctrl2 <= CTRL_K;
-                    tx_state   <= T_DATA;
-                end
-                T_DATA: begin
-                    // Only consume on a real handshake, otherwise a CDC
-                    // underrun mid-frame clocks stale data out as payload in a
-                    // frame that still looks well formed.
-                    if (phy_tx_valid) begin
-                        gt_txdata  <= phy_tx_data;
-                        gt_txctrl2 <= 8'h00;
-                        if (phy_tx_last) tx_state <= T_EOF;
-                    end else begin
-                        gt_txdata  <= W_IDLE;
-                        gt_txctrl2 <= CTRL_K;
-                    end
-                end
-                T_EOF: begin
-                    gt_txdata  <= W_EOF;
-                    gt_txctrl2 <= CTRL_K;
-                    tx_state   <= T_IDLE;
-                end
+                T_IDLE: if (link_up_tx && phy_tx_valid) tx_state <= T_DATA;
+                T_DATA: if (phy_tx_valid && phy_tx_last) tx_state <= T_EOF;
+                T_EOF:  tx_state <= T_IDLE;
                 default: tx_state <= T_IDLE;
             endcase
         end
@@ -125,12 +154,14 @@ module braid_framer (
 
     // ================================================================ RX
     wire rx_is_k     = gt_rxctrl0[0];
-    wire rx_is_sof   = rx_is_k && (gt_rxdata[7:0] == K27_7);
+    wire rx_is_sof_s = rx_is_k && (gt_rxdata[7:0] == K27_7);
+    wire rx_is_sof_c = rx_is_k && (gt_rxdata[7:0] == K28_2);
+    wire rx_is_sof_p = rx_is_k && (gt_rxdata[7:0] == K28_3);
+    wire rx_is_sof   = rx_is_sof_s || rx_is_sof_c || rx_is_sof_p;
     wire rx_is_eof   = rx_is_k && (gt_rxdata[7:0] == K29_7);
     wire rx_code_err = (|gt_rxctrl1[3:0]) | (|gt_rxctrl3[3:0]);
 
-    logic [31:0] hold_data;
-    logic        hold_valid, in_frame, err_sticky;
+    logic in_frame;
 
     logic stk_k_lane0, stk_k_other;
     always_ff @(posedge clk_rx) begin
@@ -147,59 +178,36 @@ module braid_framer (
     end
     assign dbg = {stk_k_other, stk_k_lane0};
 
-    // The EOF marker arrives AFTER the final data word, so one word is held
-    // back to assert phy_rx_last alongside that word rather than a cycle late.
-    always_ff @(posedge clk_rx) begin
-        if (!rstn_rx) begin
-            phy_rx_valid <= 1'b0;
-            phy_rx_last  <= 1'b0;
-            phy_rx_err   <= 1'b0;
-            phy_rx_data  <= '0;
-            hold_valid   <= 1'b0;
-            hold_data    <= '0;
-            in_frame     <= 1'b0;
-            err_sticky   <= 1'b0;
-        end else begin
-            phy_rx_valid <= 1'b0;
-            phy_rx_last  <= 1'b0;
-            phy_rx_err   <= 1'b0;
+    // COMBINATIONAL as well, for the same reason: this register was back to
+    // back with braid_link_rx's. gt_rxdata comes straight off the GT's own
+    // output register, so the path into braid_link_rx is still
+    // register-to-register -- it just has the K-character decode in it now.
+    //
+    // phy_rx_hdr and phy_rx_cks are NO LONGER HELD. Each is only meaningful on
+    // the cycle its strobe is asserted; braid_link_rx latches them there.
+    //
+    // KNOWN LOSS: an 8B/10B error in the trailer is reported on phy_rx_eof,
+    // which arrives after the syndrome has already been delivered by
+    // cut-through. It is counted, not retracted. The trailer carries no payload.
+    assign phy_rx_data  = gt_rxdata;
+    assign phy_rx_hdr   = gt_rxdata[31:8];
+    assign phy_rx_cks   = gt_rxdata[31:8];
+    assign phy_rx_type  = rx_is_sof_c ? 2'd1 : rx_is_sof_p ? 2'd2 : 2'd0;
+    assign phy_rx_err   = rx_code_err;
+    assign phy_rx_sof   = rstn_rx && link_up_rx && rx_is_sof;
+    assign phy_rx_eof   = rstn_rx && link_up_rx && in_frame && rx_is_eof;
+    assign phy_rx_valid = rstn_rx && link_up_rx && in_frame && !rx_is_k;
 
-            if (!link_up_rx) begin
-                in_frame   <= 1'b0;
-                hold_valid <= 1'b0;
-                err_sticky <= 1'b0;
-            end else if (rx_is_sof) begin
-                in_frame   <= 1'b1;
-                hold_valid <= 1'b0;
-                err_sticky <= rx_code_err;
-            end else if (in_frame) begin
-                if (rx_is_eof) begin
-                    if (hold_valid) begin
-                        phy_rx_data  <= hold_data;
-                        phy_rx_valid <= 1'b1;
-                        phy_rx_last  <= 1'b1;
-                        phy_rx_err   <= err_sticky | rx_code_err;
-                    end
-                    in_frame   <= 1'b0;
-                    hold_valid <= 1'b0;
-                    err_sticky <= 1'b0;
-                end else if (rx_is_k) begin
-                    // Any other control word mid-frame means the frame broke.
-                    in_frame   <= 1'b0;
-                    hold_valid <= 1'b0;
-                    err_sticky <= 1'b0;
-                end else begin
-                    if (hold_valid) begin
-                        phy_rx_data  <= hold_data;
-                        phy_rx_valid <= 1'b1;
-                        phy_rx_last  <= 1'b0;
-                        phy_rx_err   <= err_sticky;
-                    end
-                    hold_data  <= gt_rxdata;
-                    hold_valid <= 1'b1;
-                    err_sticky <= rx_code_err;
-                end
-            end
+    always_ff @(posedge clk_rx) begin
+        if (!rstn_rx || !link_up_rx) begin
+            in_frame <= 1'b0;
+        end else if (rx_is_sof) begin
+            in_frame <= 1'b1;
+        end else if (in_frame && rx_is_k) begin
+            // EOF, or any other control word -- which means the frame broke.
+            // Either way the frame is over; braid_link_rx tells them apart from
+            // whether an EOF strobe accompanied it.
+            in_frame <= 1'b0;
         end
     end
 

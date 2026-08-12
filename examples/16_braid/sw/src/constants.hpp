@@ -18,7 +18,7 @@ constexpr uint32_t VFPGA_ID = 0;
 // that is where the datapath now lives. Using ACLK_MHZ to convert an RTT gives
 // an answer 55% too small.
 constexpr double   ACLK_MHZ = 400.0;
-constexpr double   TXCLK_MHZ = 257.8125;   // 10.3125 Gbps / 10 bits / 4 chars
+constexpr double   TXCLK_MHZ = 390.625;    // 15.625 Gbps / 10 bits / 4 chars
 
 namespace reg {
 constexpr uint32_t CTRL        = 0;    // RW
@@ -43,6 +43,16 @@ constexpr uint64_t RUN   = 1ULL << 0;  // run the syndrome generator
 constexpr uint64_t ARM   = 1ULL << 1;  // arm the checker
 constexpr uint64_t CLEAR = 1ULL << 2;  // clear counters
 constexpr uint64_t ECHO  = 1ULL << 3;  // reflect received syndromes back
+// Marks outgoing frames as carrying a list of fired stabilizer positions
+// rather than a dense bitmap.
+//
+// THIS FLAG DOES NOT MAKE ANYTHING FASTER BY ITSELF. Nothing in the link
+// interprets the payload -- it sends however many words SYN_WORDS asks for and
+// the far end reads the flag to know what it received. The saving comes from
+// the host then setting SYN_WORDS lower for the same code distance: d=25 as a
+// dense bitmap is 20 words, as ~12 positions it is 4, and the link does not
+// care which. Measured protocol cost is 56.3 ns against 15.4 ns.
+constexpr uint64_t SPARSE = 1ULL << 4;
 }
 
 // GT loopback select (UG578 LOOPBACK[2:0]), written to reg::LOOPBACK.
@@ -67,7 +77,7 @@ constexpr int LINK_UP     = 5;
 }
 
 constexpr uint64_t DEFAULT_ROUNDS   = 100000;
-constexpr uint64_t DEFAULT_INTERVAL = 258;    // 258 tx_clk @257.8125MHz = 1 us, a QEC round
+constexpr uint64_t DEFAULT_INTERVAL = 391;    // 391 tx_clk @390.625MHz = 1 us, a QEC round
 constexpr int      LINK_TIMEOUT_MS  = 5000;
 
 // Latency sweep. A protocol word is 4 bytes; 1..31 words spans 4..124 bytes,
@@ -80,5 +90,23 @@ constexpr uint32_t WORD_BYTES       = 4;
 constexpr uint32_t MAX_SYN_WORDS    = 31;
 constexpr uint64_t DEFAULT_ITERS    = 1000;
 constexpr int      RTT_TIMEOUT_MS   = 100;
+
+// `braid clock` gate. The generator emits one round every INTERVAL+1 tx_clk
+// cycles, so counting frames against the host clock measures the actual GT user
+// clock -- which is the only way to tell what line rate the link is really
+// running at. The IP's declared reference frequency is NOT evidence: the wizard
+// uses it to pick PLL dividers, so if the board delivers something else the link
+// still comes up, just at a different rate, and every cycle-based measurement is
+// silently scaled.
+constexpr uint64_t CLOCK_INTERVAL = 10000;
+constexpr int      CLOCK_SECONDS  = 3;
+
+// The two candidates, and what each implies. 66 and 64 are the standard
+// multipliers for a 10G-Ethernet and a 25G-Ethernet reference respectively.
+// At 15.625 Gbps these become refclk x100. A wrong reference now costs 3% at
+// ~390 MHz, where the generated timing constraints are far less forgiving than
+// they were at 258.
+constexpr double TXCLK_IF_15625_MHZ = 390.625;    // refclk 156.25,      x100
+constexpr double TXCLK_IF_16113_MHZ = 402.832;    // refclk 161.1328125, x100
 
 }  // namespace braid

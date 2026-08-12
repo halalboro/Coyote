@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -110,6 +111,7 @@ static int judge(coyote::cThread& t) {
 int main(int argc, char* argv[]) {
     std::string mode;
     uint64_t    rounds, interval, iters, lb;
+    uint32_t    words_opt;
     int         wait_s;
 
     po::options_description opts("Options");
@@ -118,13 +120,15 @@ int main(int argc, char* argv[]) {
         ("rounds,r",   po::value<uint64_t>(&rounds)->default_value(DEFAULT_ROUNDS),
          "send: rounds to generate (0 = free-run)")
         ("interval,i", po::value<uint64_t>(&interval)->default_value(DEFAULT_INTERVAL),
-         "send: tx_clk cycles between rounds (258 = 1 us at 257.8125 MHz)")
+         "send: tx_clk cycles between rounds (391 = 1 us at 390.625 MHz)")
         ("wait,w",     po::value<int>(&wait_s)->default_value(30),
          "recv: seconds to collect before reporting")
         ("iters,n",    po::value<uint64_t>(&iters)->default_value(DEFAULT_ITERS),
          "bench: iterations per size")
         ("loopback,l", po::value<uint64_t>(&lb)->default_value(loopback::NORMAL),
-         "GT loopback: 0=normal 1=near-PCS 2=near-PMA 4=far-PCS 6=far-PMA");
+         "GT loopback: 0=normal 1=near-PCS 2=near-PMA 4=far-PCS 6=far-PMA")
+        ("words",      po::value<uint32_t>(&words_opt)->default_value(0),
+         "echo: words to reflect (0 = full width); bench: measure only this size");
 
     po::options_description hidden;
     hidden.add_options()("mode", po::value<std::string>(&mode)->default_value("status"), "");
@@ -137,6 +141,14 @@ int main(int argc, char* argv[]) {
     po::store(po::command_line_parser(argc, argv).options(all).positional(pos).run(), vm);
     po::notify(vm);
 
+    // The hardware clamps an out-of-range length to MAX_SYN_WORDS silently, so
+    // without this the tool would report a size it never actually sent.
+    if (words_opt > MAX_SYN_WORDS) {
+        std::cerr << "--words " << words_opt << " exceeds MAX_SYN_WORDS ("
+                  << MAX_SYN_WORDS << "); clamping.\n";
+        words_opt = MAX_SYN_WORDS;
+    }
+
     if (vm.count("help")) {
         std::cout << "Usage: sudo ./braid <mode> [options]\n\n"
                   << "  arm     clear counters, arm checker, exit (stays armed)\n"
@@ -145,13 +157,17 @@ int main(int argc, char* argv[]) {
                   << "  recv    arm + collect + report in one go (needs overlap)\n"
                   << "  echo    reflect received syndromes (far card, for bench)\n"
                   << "  bench   round-trip latency sweep across syndrome sizes\n"
-                  << "  status  print link and PHY diagnostics\n\n"
+                  << "  status  print link and PHY diagnostics\n"
+                  << "  clock   measure the real tx_clk against the host clock\n\n"
                   << "  Race-free: 'arm' on card A, 'send' on card B, 'report' on A.\n\n"
                   << "  Latency decomposition, one card, no cable, no peer:\n"
                   << "    braid bench -l 2    reflect in our own PMA -> our fabric + our GT\n"
                   << "    braid bench         peer echoing            -> the whole path\n"
                   << "  The difference is cable + far card. Neither number means anything\n"
-                  << "  on its own; the point is subtracting one from the other.\n\n"
+                  << "  on its own; the point is subtracting one from the other.\n"
+                  << "  -l 2 is also SYMMETRIC for free: the card reflects its own frames,\n"
+                  << "  so both legs are the size you asked for. A two-card run is not --\n"
+                  << "  see --words.\n\n"
                   << opts << "\n";
         return 0;
     }
@@ -199,12 +215,90 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // Measure the ACTUAL GT user clock against the host clock.
+    //
+    // Every latency number this tool prints is a cycle count scaled by an
+    // assumed frequency, so if the board's reference clock is not what the GT
+    // wizard was told, every result is silently wrong by that ratio and nothing
+    // anywhere reports it. Aurora on this same QSFP cage declares 161.1328125
+    // MHz while its measured throughput implies the board delivers 156.25 -- a
+    // 3% discrepancy that no build step would ever flag.
+    //
+    // Works standalone under -l 2: near-end loopback brings the link up with no
+    // cable and no peer.
+    if (mode == "clock") {
+        t.setCSR(ctrl::CLEAR, reg::CTRL);
+        t.setCSR(0, reg::CTRL);
+        t.setCSR(0, reg::N_ROUNDS);                  // free-run
+        t.setCSR(CLOCK_INTERVAL, reg::INTERVAL);
+        t.setCSR(1, reg::SYN_WORDS);
+        t.setCSR(ctrl::RUN, reg::CTRL);
+
+        // Read the counter and the host clock as close together as possible at
+        // both ends; the CSR round trip is microseconds against a 3 s window.
+        auto     w0 = std::chrono::steady_clock::now();
+        uint64_t f0 = t.getCSR(reg::TX_FRAMES);
+        std::this_thread::sleep_for(std::chrono::seconds(CLOCK_SECONDS));
+        uint64_t f1 = t.getCSR(reg::TX_FRAMES);
+        auto     w1 = std::chrono::steady_clock::now();
+        t.setCSR(0, reg::CTRL);
+
+        double secs = std::chrono::duration<double>(w1 - w0).count();
+        if (f1 <= f0) {
+            std::cerr << "[FAIL] no frames generated (link down?). "
+                      << "Try 'braid clock -l 2'.\n";
+            return 1;
+        }
+        double mhz = (f1 - f0) * double(CLOCK_INTERVAL + 1) / secs / 1e6;
+
+        std::cout << std::fixed << std::setprecision(3)
+                  << "  frames=" << (f1 - f0) << " over " << secs << " s\n"
+                  << "  tx_clk = " << mhz << " MHz\n";
+
+        struct { double f; const char* what; } cand[] = {
+            {TXCLK_IF_15625_MHZ, "refclk 156.25       -> 15.625 Gbps"},
+            {TXCLK_IF_16113_MHZ, "refclk 161.1328125  -> 16.1133 Gbps"},
+        };
+        const char* best = nullptr;
+        double best_err = 1e9;
+        for (auto& c : cand) {
+            double err = std::abs(mhz - c.f) / c.f * 100.0;
+            std::cout << "    vs " << std::setw(9) << c.f << " MHz  ("
+                      << c.what << ")  error " << std::setprecision(2)
+                      << err << "%\n" << std::setprecision(3);
+            if (err < best_err) { best_err = err; best = c.what; }
+        }
+        if (best_err < 0.5)
+            std::cout << "  => " << best << "\n";
+        else
+            std::cout << "  => matches NEITHER candidate within 0.5%. "
+                         "Do not trust any latency number until this is explained.\n";
+        return best_err < 0.5 ? 0 : 1;
+    }
+
     // Reflector: every received syndrome goes straight back out. The far card
     // measures the round trip against its own clock.
     if (mode == "echo") {
         t.setCSR(ctrl::CLEAR, reg::CTRL);
         t.setCSR(0, reg::CTRL);
+        // The reflector transmits with ITS OWN SYN_WORDS, not the length of the
+        // frame it just received, so leaving this at 0 makes every echo full
+        // width regardless of what the sender asked for. The return leg then
+        // stops varying with payload size and the measured RTT is asymmetric:
+        // the slope collapses from 2 cycles per word to 1, and small payloads
+        // are inflated by a constant ~100 ns.
+        //
+        // Until the RTL mirrors the received length, match this to the sender
+        // by hand and sweep one size at a time: `braid echo --words 4` here,
+        // `braid bench --words 4` there.
+        t.setCSR(words_opt, reg::SYN_WORDS);
         t.setCSR(ctrl::ECHO | ctrl::ARM, reg::CTRL);
+        std::cout << "Reflecting " << (words_opt ? std::to_string(words_opt)
+                                                 : std::string("full-width"))
+                  << " word frames.\n";
+        if (words_opt == 0)
+            std::cout << "  WARNING: full width. RTT on the far card will be\n"
+                      << "  asymmetric and inflated -- pass --words N to match it.\n";
         std::cout << "Reflector active. Run 'braid bench' on the other card.\n"
                   << "Ctrl-C to stop.\n";
         while (true) std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -267,9 +361,13 @@ int main(int argc, char* argv[]) {
         // 31, not 32, so doubling alone would stop at 16 and never exercise a
         // full-size frame -- which is the size most likely to expose a depth or
         // width bug.
-        for (uint32_t words = 1; words <= MAX_SYN_WORDS;
-             words = (words * 2 > MAX_SYN_WORDS && words != MAX_SYN_WORDS)
-                   ? MAX_SYN_WORDS : words * 2) {
+        // --words pins the sweep to one size, so it can be matched against a
+        // reflector running `braid echo --words N` for a symmetric measurement.
+        for (uint32_t words = words_opt ? words_opt : 1;
+             words <= (words_opt ? words_opt : MAX_SYN_WORDS);
+             words = words_opt ? words_opt + 1
+                   : ((words * 2 > MAX_SYN_WORDS && words != MAX_SYN_WORDS)
+                      ? MAX_SYN_WORDS : words * 2)) {
             std::vector<uint64_t> rtt;
             rtt.reserve(iters);
             uint64_t lost = 0;

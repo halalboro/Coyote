@@ -35,7 +35,7 @@
  *
  * Register map (host CSR index = byte offset / 8):
  *   0  CTRL        RW : bit0=run generator, bit1=arm checker, bit2=clear counters,
- *                       bit3=echo received syndromes back
+ *                       bit3=echo received syndromes back, bit4=mark frames sparse
  *   1  STATUS      RO : bit0=channel_up, bits[4:1]=PHY debug, bit5=link_up
  *   2  N_ROUNDS    RW : rounds to generate (0 = free-run until stopped)
  *   3  INTERVAL    RW : braid_tx_clk cycles between generated rounds (NOT aclk)
@@ -121,6 +121,12 @@ wire clr       = ctrl_reg[REG_CTRL][2];
 // CLEANLY while echo mode could never engage and SYN_WORDS was ignored. Nothing
 // warned. If you add a control alias, declare it here.
 wire        echo_mode = ctrl_reg[REG_CTRL][3];
+// Marks outgoing frames as carrying a list of fired stabilizer positions rather
+// than a dense bitmap. NOTHING in this design interprets the payload either
+// way -- the flag exists so the far end knows what it received. Sparse is
+// cheaper purely because the host then sets SYN_WORDS lower for the same code
+// distance, and the link sends however many words it is told to.
+wire        sparse    = ctrl_reg[REG_CTRL][4];
 wire [7:0]  syn_words = ctrl_reg[REG_SYN_WORDS][7:0];
 wire [31:0] n_rounds  = ctrl_reg[REG_N_ROUNDS][31:0];
 wire [31:0] interval  = ctrl_reg[REG_INTERVAL][31:0];
@@ -142,6 +148,8 @@ wire link_up_a = aurora_channel_up;
 // =========================================================================
 logic [31:0] phy_tx_data;
 logic        phy_tx_valid, phy_tx_last, phy_tx_ready;
+logic [23:0] phy_tx_hdr, phy_tx_cks;
+logic [1:0]  phy_tx_type;
 
 logic [N_STAB-1:0] syn_bits;
 logic              syn_valid;
@@ -150,35 +158,37 @@ logic              corr_valid;
 logic [31:0]       tx_frames, tx_dropped;
 
 logic [31:0] gen_timer, gen_count;
-logic [19:0] gen_round;
+logic [15:0] gen_round;
 // The round number presented to braid_link_tx must be registered in the same
 // cycle as syn_bits. gen_round increments on that cycle too, so passing it
 // directly would stamp the frame with R+1 while carrying pattern(R).
-logic [19:0] gen_round_q;
+logic [15:0] gen_round_q;
 
 logic [31:0] cyc_cnt, t_start, rtt_cycles;
 logic        t_start_v, rtt_new, rtt_ack;
 
 // Control and configuration after crossing from aclk.
-logic        run_t, clr_t, echo_t, link_up_t;
+logic        run_t, clr_t, echo_t, link_up_t, sparse_t;
 logic [31:0] n_rounds_t, interval_t;
 logic [7:0]  syn_words_t;
 
 // Echo payload after crossing from braid_rx_clk.
 logic              rx_event_t;
-logic [N_STAB+19:0] echo_word_t;
+logic [N_STAB+15:0] echo_word_t;
 logic [N_STAB-1:0] echo_bits;
 logic              echo_valid;
-logic [19:0]       echo_round;
+logic [15:0]       echo_round;
 
 // =========================================================================
 // Declarations -- braid_rx_clk domain
 // =========================================================================
 logic [31:0] phy_rx_data;
-logic        phy_rx_valid, phy_rx_last, phy_rx_err;
+logic        phy_rx_valid, phy_rx_eof, phy_rx_err, phy_rx_sof;
+logic [1:0]  phy_rx_type;
+logic [23:0] phy_rx_hdr, phy_rx_cks;
 
 logic [N_STAB-1:0] syn_out_bits;
-logic              syn_out_valid, syn_out_gap;
+logic              syn_out_valid, syn_out_gap, syn_out_bad, syn_out_sparse;
 logic [31:0]       syn_out_round;
 logic [N_CORR-1:0] corr_out_bits;
 logic              corr_out_valid;
@@ -199,10 +209,10 @@ wire [N_STAB-1:0] word_mask = ({N_STAB{1'b1}} >> (N_STAB - {active_words, 5'b0})
 
 // Deterministic pattern both ends compute independently from the round number,
 // so the checker needs no side channel to know what to expect.
-function automatic logic [N_STAB-1:0] pattern(input logic [19:0] r);
+function automatic logic [N_STAB-1:0] pattern(input logic [15:0] r);
     logic [N_STAB+31:0] p;
     for (int k = 0; k <= (N_STAB/32); k++)
-        p[k*32 +: 32] = {12'b0, r} ^ (32'h9E3779B9 * (k + 1));
+        p[k*32 +: 32] = {16'b0, r} ^ (32'h9E3779B9 * (k + 1));
     return p[N_STAB-1:0];
 endfunction
 
@@ -298,9 +308,9 @@ end
 // across the crossing. Writing them while RUN is asserted is a software bug
 // that will produce a torn value -- set them first, then set RUN.
 // =========================================================================
-xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(4))
-    inst_ctrl_tx (.src_clk(aclk), .src_in({link_up_a, echo_mode, clr, run}),
-                  .dest_clk(tclk), .dest_out({link_up_t, echo_t, clr_t, run_t}));
+xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(5))
+    inst_ctrl_tx (.src_clk(aclk), .src_in({sparse, link_up_a, echo_mode, clr, run}),
+                  .dest_clk(tclk), .dest_out({sparse_t, link_up_t, echo_t, clr_t, run_t}));
 
 xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(32))
     inst_nrnd_tx (.src_clk(aclk), .src_in(n_rounds),
@@ -423,11 +433,11 @@ end
 // that cannot be reflected immediately is stale, and re-offering it later would
 // send the decoder an old round dressed up as a current one. Dropping is the
 // policy everywhere else in BRAID for the same reason.
-braid_cdc_event #(.WIDTH(N_STAB + 20)) inst_echo_cdc (
+braid_cdc_event #(.WIDTH(N_STAB + 16)) inst_echo_cdc (
     .src_clk    (rclk),
     .src_rstn   (rrstn),
     .src_valid  (syn_out_valid),
-    .src_data   ({syn_out_round[19:0], syn_out_bits}),
+    .src_data   ({syn_out_round[15:0], syn_out_bits}),
     .src_busy   (echo_busy),
     .src_accept (),
     .dest_clk   (tclk),
@@ -444,7 +454,7 @@ always_ff @(posedge tclk) begin
         echo_valid <= echo_t && rx_event_t;
         if (rx_event_t) begin
             echo_bits  <= echo_word_t[N_STAB-1:0];
-            echo_round <= echo_word_t[N_STAB+19:N_STAB];
+            echo_round <= echo_word_t[N_STAB+15:N_STAB];
         end
     end
 end
@@ -468,7 +478,7 @@ always_ff @(posedge tclk) begin
                 syn_bits    <= pattern(gen_round);
                 gen_round_q <= gen_round;          // must match syn_bits
                 syn_valid   <= 1'b1;
-                gen_round   <= gen_round + 20'd1;
+                gen_round   <= gen_round + 16'd1;
                 gen_count   <= gen_count + 32'd1;
             end else begin
                 gen_timer <= gen_timer + 32'd1;
@@ -534,7 +544,7 @@ always_ff @(posedge rclk) begin
             // Compare only the words actually transmitted. With a runtime
             // payload length the upper bits of syn_out_bits are stale from a
             // previous, longer frame and would read as mismatches.
-            if ((syn_out_bits & word_mask) != (pattern(syn_out_round[19:0]) & word_mask))
+            if ((syn_out_bits & word_mask) != (pattern(syn_out_round[15:0]) & word_mask))
                 rx_mismatch <= rx_mismatch + 32'd1;
         end
     end
@@ -552,6 +562,8 @@ braid_link_tx #(.N_STAB(N_STAB), .N_CORR(N_CORR)) inst_braid_tx (
     .corr_bits(corr_bits), .corr_valid(corr_valid),
     .phy_tx_data(phy_tx_data), .phy_tx_valid(phy_tx_valid),
     .phy_tx_last(phy_tx_last), .phy_tx_ready(phy_tx_ready),
+    .phy_tx_hdr(phy_tx_hdr), .phy_tx_cks(phy_tx_cks), .phy_tx_type(phy_tx_type),
+    .syn_sparse(sparse_t),
     .tx_frames(tx_frames), .tx_dropped(tx_dropped)
 );
 
@@ -561,7 +573,9 @@ braid_link_rx #(.N_STAB(N_STAB), .N_CORR(N_CORR)) inst_braid_rx (
     .syn_out_round(syn_out_round), .syn_out_gap(syn_out_gap),
     .corr_out_bits(corr_out_bits), .corr_out_valid(corr_out_valid),
     .phy_rx_data(phy_rx_data), .phy_rx_valid(phy_rx_valid),
-    .phy_rx_last(phy_rx_last), .phy_rx_err(phy_rx_err),
+    .phy_rx_eof(phy_rx_eof), .phy_rx_err(phy_rx_err), .syn_out_bad(syn_out_bad),
+    .phy_rx_sof(phy_rx_sof), .phy_rx_hdr(phy_rx_hdr),
+    .phy_rx_type(phy_rx_type), .phy_rx_cks(phy_rx_cks), .syn_out_sparse(syn_out_sparse),
     .rx_frames(rx_frames), .rx_errors(rx_errors), .rx_gaps(rx_gaps)
 );
 
@@ -571,8 +585,11 @@ braid_link_rx #(.N_STAB(N_STAB), .N_CORR(N_CORR)) inst_braid_rx (
 braid_phy_shim inst_phy (
     .phy_tx_data(phy_tx_data), .phy_tx_valid(phy_tx_valid),
     .phy_tx_last(phy_tx_last), .phy_tx_ready(phy_tx_ready),
+    .phy_tx_hdr(phy_tx_hdr), .phy_tx_cks(phy_tx_cks), .phy_tx_type(phy_tx_type),
     .phy_rx_data(phy_rx_data), .phy_rx_valid(phy_rx_valid),
-    .phy_rx_last(phy_rx_last), .phy_rx_err(phy_rx_err),
+    .phy_rx_eof(phy_rx_eof), .phy_rx_err(phy_rx_err),
+    .phy_rx_hdr(phy_rx_hdr), .phy_rx_sof(phy_rx_sof),
+    .phy_rx_type(phy_rx_type), .phy_rx_cks(phy_rx_cks),
     .shl_tx_tdata(axis_aurora_tx.tdata), .shl_tx_tvalid(axis_aurora_tx.tvalid),
     .shl_tx_tlast(axis_aurora_tx.tlast), .shl_tx_tready(axis_aurora_tx.tready),
     .shl_rx_tdata(axis_aurora_rx.tdata), .shl_rx_tvalid(axis_aurora_rx.tvalid),

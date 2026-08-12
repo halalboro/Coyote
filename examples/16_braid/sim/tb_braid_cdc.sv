@@ -7,10 +7,15 @@
  * the next, carried by a perfectly well-formed valid pulse. The checksum was
  * computed on the far side of the crossing, so nothing downstream can catch it.
  *
- * Two clocks, deliberately not integer-related, at the real frequencies:
- * 257.8125 MHz source (the GT receive clock) and 400 MHz destination (aclk).
- * They drift against each other for the whole run, so the accept and delivery
- * edges land in every relative phase rather than one convenient alignment.
+ * Clocked at the pair that is actually ON THE LATENCY PATH: the echo crossing,
+ * braid_rx_clk -> braid_tx_clk, both 390.625 MHz at 15.625 Gbps. They are the
+ * same nominal frequency but different oscillators (rx is recovered from the
+ * far card), so they are modelled as independent clocks that drift against each
+ * other for the whole run -- the accept and delivery edges land in every
+ * relative phase rather than one convenient alignment.
+ *
+ * The other users of this module cross into aclk, which is off the critical
+ * path: they only affect how quickly the host sees a status register.
  *
  * WIDTH is 1012 -- the actual echo-path width, which is also the widest
  * xpm_cdc_handshake this design can legally instantiate.
@@ -31,8 +36,18 @@ module tb_braid_cdc;
     localparam int N = 200;
 
     logic sclk = 0, dclk = 0, srstn = 0;
-    always #1.9394 sclk = ~sclk;   // 257.8125 MHz, the GT clock
-    always #1.2500 dclk = ~dclk;   // 400 MHz, aclk
+    // 390.625 MHz nominal both sides. The DESTINATION is offset by 2% -- far
+    // more than the real +/-200 ppm -- purely so the phase relationship sweeps
+    // through every value within the length of this run.
+    //
+    // At a realistic 200 ppm the beat period is ~109 us against a ~10 us test,
+    // so the two clocks sit at a FIXED phase and the measured latency comes out
+    // as a single number with no spread. That number is not the worst case, and
+    // on hardware the phase does eventually wander through all of it. Reporting
+    // min=mean=max there would have been a measurement artefact presented as a
+    // guarantee.
+    always #1.28000 sclk = ~sclk;
+    always #1.30560 dclk = ~dclk;
 
     logic         s_valid, s_busy, s_accept;
     logic [W-1:0] s_data;

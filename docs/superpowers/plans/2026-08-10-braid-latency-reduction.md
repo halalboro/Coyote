@@ -478,126 +478,231 @@ CSR crossing layer the biggest bug surface with no simulation; it has one now.
 
 ---
 
-### Task 3: Raise rate and width to 25.78 Gbps / 64-bit (Stage 3)
+## Design space, probed exhaustively (2026-08-11)
 
-GT pipeline latency in nanoseconds scales with the **internal** clock period
-(`RXUSRCLK = line_rate / internal_width`), not the fabric clock. Holding internal
-width at 40 (the only value 8B/10B allows) and raising the rate takes RXUSRCLK
-from 258 MHz to 644 MHz — a **2.5x shorter internal period**. The fabric side
-lands at 322 MHz with a 64-bit user width.
+A calibrated model, then every legal GT configuration measured against it.
 
-Verified legal by probe: `user=64, int=40` is accepted; `int=20` is rejected at
-every user width.
-
-**The protocol stays on 32-bit words.** `braid_framer` becomes a 32↔64-bit gearbox,
-so `braid_link_tx`/`_rx` are untouched. Frames with an odd word count are padded
-with one idle word, which the receiver discards because it is a K-character.
-
-**Files:**
-- Modify: `scripts/ip_inst/braid_infrastructure.tcl`
-- Modify: `hw/hdl/braid/braid_framer.sv`
-- Modify: `examples/16_braid/sim/tb_braid.sv`
-
-- [ ] **Step 1: Update the GT IP configuration**
-
-```tcl
-            CONFIG.TX_LINE_RATE         25.78125 \
-            CONFIG.RX_LINE_RATE         25.78125 \
-            CONFIG.TX_USER_DATA_WIDTH   64 \
-            CONFIG.RX_USER_DATA_WIDTH   64 \
-            CONFIG.RX_COMMA_ALIGN_WORD  8 \
+```
+protocol = (F + P) x T_w     T_w = W*1.25/R (8B/10B)  or  W/R (raw)
+GT       = K x I / R         K = 14.3 internal pipeline stages
 ```
 
-**`RX_COMMA_ALIGN_WORD` becomes 8 — it must equal the datapath width in bytes.**
-Leaving it at 4 lets the comma land in lane 4 as well as lane 0, and the framer
-inspects only lane 0.
+F = 9 fixed protocol cycles (tb_braid: 10 cycles at 1 word, 1 cycle/word).
+K = 14.3 calibrated from the measured 55.6 ns at I=40, R=10.3125.
+On today's build the model predicts 117.5 ns against 117.9 measured, so it is
+trustworthy for extrapolation.
 
-**Verify the dict is accepted before spending a bitgen.** Write this to
-`/tmp/verify25g.tcl` and run it via the Vivado MCP (`source /tmp/verify25g.tcl`),
-then read `/tmp/verify25g_out.txt`:
+**I, the INTERNAL datapath width, is the term nobody had touched.** We run I=40,
+the widest option, and it accounts for most of the GT's 55.6 ns.
 
-```tcl
-set fh [open /tmp/verify25g_out.txt w]
-proc say {fh m} { puts $fh $m; flush $fh }
-catch {close_project}
-create_project -force v25 /tmp/v25 -part xcu55c-fsvh2892-2L-e
-create_ip -name gtwizard_ultrascale -vendor xilinx.com -library ip -module_name g25
-set ip [get_ips g25]
-# CHANNEL_ENABLE X0Y0 because xcu55c is the probe part; X0Y44 is a U280 site.
-if {[catch {set_property -dict [list \
-    CONFIG.GT_TYPE GTY CONFIG.CHANNEL_ENABLE X0Y0 \
-    CONFIG.TX_MASTER_CHANNEL X0Y0 CONFIG.RX_MASTER_CHANNEL X0Y0 \
-    CONFIG.TX_LINE_RATE 25.78125 CONFIG.RX_LINE_RATE 25.78125 \
-    CONFIG.TX_REFCLK_FREQUENCY 156.25 CONFIG.RX_REFCLK_FREQUENCY 156.25 \
-    CONFIG.TX_DATA_ENCODING 8B10B CONFIG.RX_DATA_DECODING 8B10B \
-    CONFIG.TX_USER_DATA_WIDTH 64 CONFIG.RX_USER_DATA_WIDTH 64 \
-    CONFIG.TX_BUFFER_MODE 0 CONFIG.RX_BUFFER_MODE 0 \
-    CONFIG.RX_COMMA_P_ENABLE true CONFIG.RX_COMMA_M_ENABLE true \
-    CONFIG.RX_COMMA_PRESET K28.5 CONFIG.RX_COMMA_ALIGN_WORD 8 \
-    CONFIG.RX_COMMA_SHOW_REALIGN_ENABLE false \
-    CONFIG.FREERUN_FREQUENCY 100 ] $ip} e]} {
-    say $fh "FAILED: [string range $e 0 300]"
-} else {
-    say $fh "DICT OK"
-    foreach p {CONFIG.TX_LINE_RATE CONFIG.TX_USER_DATA_WIDTH CONFIG.TX_INT_DATA_WIDTH \
-               CONFIG.RX_COMMA_ALIGN_WORD} { catch {say $fh "  $p = [get_property $p $ip]"} }
-}
-if {[catch {generate_target {instantiation_template} $ip} e]} {
-    say $fh "generate FAILED"
-} else { say $fh "generate ok" }
-close $fh
-```
+### Negative result: raw mode is not worth it
 
-Expected: `DICT OK`, `TX_INT_DATA_WIDTH = 80` (8 chars x 10 bits), `generate ok`.
-**If 25.78125 Gbps with 8B/10B is rejected, this stage is not available** — GTY
-8B/10B has a rate ceiling. Fall back to keeping 10.3125 Gbps and taking only the
-64-bit width (user clock 128.9 MHz — which would be SLOWER, so in that case skip
-Task 3 entirely and go to Task 4).
+AMD's fintech note gets ~13 ns of GT latency from a **16-bit internal
+datapath**. Probed on GTYE4 in Vivado 2025.1:
 
-- [ ] **Step 2: Widen the framer's GT ports and add the gearbox**
+- **8B/10B is locked to I=40.** I=20 rejected at every rate and user width;
+  user width 16 rejected outright.
+- **Raw mode bottoms out at I=32.** I=16 rejected at every rate and width.
 
-`gt_txdata`/`gt_rxdata` become `[63:0]`, `gt_txctrl2` `[7:0]` (all 8 lanes used),
-`gt_rxctrl0` `[15:0]` (bits 7:0 used).
+So the blog's headline configuration is not reachable on this transceiver
+through this wizard at all. What raw mode actually buys is I=32 instead of 40
+(1.25x) and no 25% line overhead (1.25x) — and both are exactly cancelled by
+needing a 1.25x lower line rate to hold the same fabric clock:
 
-Control words keep exactly one K in lane 0:
+| config | fabric | predicted one-way |
+|---|---:|---:|
+| 8B/10B 15.625 Gbps, W=32, I=40 | 390.6 MHz | **79.9 ns** |
+| raw 12.5 Gbps, W=32, I=32 | 390.6 MHz | **79.9 ns** |
+| raw 25.0 Gbps, W=64, I=64 | 390.6 MHz | 74.8 ns |
+| raw 15.625 Gbps, W=32, I=32 | 488.3 MHz | 65.9 ns |
 
-```systemverilog
-    localparam logic [63:0] W_IDLE = {{7{D16_2}}, K28_5};
-    localparam logic [63:0] W_SOF  = {{7{D16_2}}, K27_7};
-    localparam logic [63:0] W_EOF  = {{7{D16_2}}, K29_7};
-    localparam logic [7:0]  CTRL_K = 8'b0000_0001;
-```
+Identical to the decimal at the same fabric clock. Raw mode costs us our own
+scrambler, our own block sync, RXSLIDE alignment and the loss of 8B/10B's
+disparity and not-in-table error flags — **for nothing.** Do not do it.
 
-TX gearbox: hold the first protocol word, emit `{word1, word0}` when the second
-arrives. If `phy_tx_last` lands on an odd word, emit `{W_IDLE[63:32], word}` with
-`gt_txctrl2 = 8'b1111_0000` so the padding half is K-characters.
+The 488 MHz row is the theoretical edge and is not realistic in a DFX region.
 
-RX gearbox: on each 64-bit data word, emit `gt_rxdata[31:0]` then
-`gt_rxdata[63:32]`, suppressing the second if its `rxctrl0` bits mark it as
-control (the odd-length pad).
+### Where the remaining nanoseconds actually are
 
-- [ ] **Step 3: Update the testbench for 64-bit GT words**
+With I pinned at 40 and the fabric ceiling near 390 MHz, the transceiver is no
+longer the cheapest target. Ranked by nanoseconds per unit of risk:
 
-Widen `a_txdata`/`b_rxdata` to `[63:0]` and the misalignment model to shift by
-1–7 bytes. Keep the same three tests.
+| step | delta | risk | why |
+|---|---:|---|---|
+| **shorter cable** | **-7** | none | ~9.6 ns of the budget is 2 m of DAC at 4.76 ns/m. A 0.5 m DAC is ~2.4 ns. This is a purchase, not a design. |
+| rate to 15.625 Gbps | -38 | timing at 390.6 MHz | Task 3. Two config lines. |
+| protocol F: 9 -> 5 | -10 | moderate, sim-verifiable | Task 5 below. |
+| PMA RXSLIDE | -5? | high | Task 4. Drops the PCS comma aligner from the path. |
 
-- [ ] **Step 4: Run the simulation**
+Cumulative: **~58 ns one-way**, with 8B/10B, at a 390 MHz fabric clock, no raw
+mode and no exotic clocking.
 
-Expected: Tests 1 and 2 pass unchanged. **Test 3's cycle counts should roughly
-halve for multi-word payloads** because two protocol words now ride per GT cycle.
-
-- [ ] **Step 5: Build, program both cards, measure**
-
-Expected: RTT fixed term down a further ~60–80 ns, and the slope roughly halved.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add -A
-git commit -m "braid: 25.78 Gbps, 64-bit GT datapath with 32-bit protocol gearbox"
-```
+**The single best ns-per-effort item in the entire budget is a shorter cable.**
+It is 6% of the current one-way latency and costs nothing but a part.
 
 ---
+
+### Task 3: Raise the line rate to 15.625 Gbps (Stage 3) — REVISED
+
+**The original Task 3 (25.78 Gbps, 64-bit) is impossible.** The plan's own
+"verify the dict before spending a bitgen" step earned its keep: probed on a
+GTYE4 part in Vivado 2025.1, every 8B/10B combination at 25.78125 was rejected.
+Two independent blockers:
+
+1. **GTY 8B/10B tops out at 16.375 Gbps.** Accepted: 10.3125, 12.5, 15.0,
+   15.625, 16.11328125. Rejected: 16.4355, 17.5, 18.75, 20.625, 25.0, 25.78125.
+2. **25.78125 needs RAW encoding AND a 64-bit datapath**, and even then only
+   from a 161.1328125 MHz reference. `RAW uw=64` was the single accepted
+   combination at that rate.
+
+Going there means owning comma alignment, DC balance and scrambling. That is a
+different project, not a rate change.
+
+**The plan also had the width backwards.** 64-bit is WORSE for latency, not
+better. At a fixed line rate a wider word does not shorten serialisation — same
+bits, same rate — but it lengthens every fixed FSM cycle, and our protocol
+spends ~9 cycles on framing regardless of payload. Probed: at 15.625 Gbps,
+32-bit gives 2.560 ns/word against 64-bit's 5.120. Stay at 32.
+
+#### The reference clock, finally measured
+
+`braid clock -l 2` reports **257.808 MHz, 0.00% from 257.8125**. The board
+delivers **156.25 MHz** and BRAID's GT declares 156.25, so it is correctly
+configured and every latency figure in this document stands as measured.
+
+Aurora (example 14) is the misconfigured one: it declares 161.1328125 against
+the same cage, so it runs 25.0 Gbps/lane rather than 25.78125 — which is exactly
+why its measured 2.648 ns/beat never matched the predicted 2.560. Worth ~3% to
+example 14, unrelated to this plan.
+
+`u280_static_base.xdc` constrains `gt1_refclk_p` at 6.206 ns (161.13 MHz) and
+`u280_shell_base.xdc` at 3.103 ns. Both are wrong for a 156.25 MHz clock, but
+both are FASTER than reality, so they over-constrain and are safe. Leave them:
+they are shared with the Aurora and network builds.
+
+#### The target
+
+**15.625 Gbps = 156.25 x 100**, the largest multiplier under the 8B/10B ceiling
+that the board's reference can reach. 32-bit user width, everything else
+unchanged.
+
+| | now | at 15.625 Gbps |
+|---|---:|---:|
+| line rate | 10.3125 Gbps | 15.625 Gbps |
+| tx_clk | 257.8125 MHz | **390.625 MHz** |
+| ns per word | 3.879 | 2.560 |
+| protocol (13 cycles @ 4 words) | 50.4 | ~33 |
+| GT | 55.6 | ~37 |
+| TX PCS + cable | ~11.6 | ~11 |
+| **one-way, d=11** | **117.9 measured** | **~81 predicted** |
+
+The GT term is assumed to scale with the internal clock period, since the
+pipeline is a fixed number of stages. That is the same assumption AMD's fintech
+note relies on, and it is the single largest uncertainty in the projection. The
+cable is incompressible.
+
+**The risk moves from the transceiver to timing closure.** 390.625 MHz inside a
+DFX region, on a recovered clock, is the hard part now — not the link.
+
+**Files:**
+- Modify: `scripts/ip_inst/braid_infrastructure.tcl` (two values)
+- Modify: `examples/16_braid/sw/src/constants.hpp`
+- Modify: `examples/16_braid/sim/tb_braid.sv`, `tb_braid_sys.sv` (display only)
+- Modify: `examples/16_braid/hw/src/hdl/braid_link_rx.sv`, `vfpga_top.svh`
+  (echo length mirror, riding along)
+
+- [ ] **Step 1: Change the line rate**
+
+Only these two lines in the GT dict. `RX_COMMA_ALIGN_WORD` STAYS AT 4 — the
+datapath is still 4 bytes wide, and this is the value that cost three build
+cycles when it was wrong.
+
+```tcl
+            CONFIG.TX_LINE_RATE         15.625 \
+            CONFIG.RX_LINE_RATE         15.625 \
+```
+
+- [x] **Step 2: Check the BUFG_GT divider — DONE, no change needed**
+
+Probed both rates in the wizard. It tracks the line rate by itself:
+
+| | 10.3125 Gbps | 15.625 Gbps |
+|---|---|---|
+| `TX_OUTCLK_SOURCE` | TXPROGDIVCLK | TXPROGDIVCLK |
+| `TXPROGDIV_FREQ_VAL` | 257.8125 | 390.625 |
+| `RX_OUTCLK_SOURCE` | RXOUTCLKPMA | RXOUTCLKPMA |
+
+TXOUTCLK is already the user clock at the new rate and RXOUTCLKPMA is
+line_rate/40 = 390.625 MHz, so `DIV(3'd0)` (divide by 1) stays correct on both
+sides. `braid_phy_gty` needs no change.
+
+Cross-check: the 10.3125 column predicts 257.8125 MHz, and `braid clock`
+measured 257.808 on silicon. The wizard's arithmetic and the board agree.
+
+- [ ] **Step 3: Mirror the echo length (rides along, no separate build)**
+
+The reflector transmits with its own SYN_WORDS instead of the received frame's
+length, which makes every two-card RTT asymmetric. Expose `rx_words` from
+`braid_link_rx`, widen the echo crossing from `N_STAB+20` to `N_STAB+28` (1012
+-> 1020, still inside the 1024-bit `xpm_cdc_handshake` cap), and drive
+`braid_link_tx.syn_words_sel` from it in echo mode.
+
+- [ ] **Step 4: Update the software constants**
+
+```cpp
+constexpr double   TXCLK_MHZ            = 390.625;
+constexpr uint64_t DEFAULT_INTERVAL     = 391;        // 1 us
+constexpr double   TXCLK_IF_15625_MHZ   = 390.625;    // refclk 156.25 x100
+constexpr double   TXCLK_IF_16113_MHZ   = 402.832;    // refclk 161.1328125 x100
+```
+
+- [ ] **Step 5: Run the simulation regression**
+
+```bash
+cd /scratch/anubhav/Coyote/examples/16_braid/sim && ./run.sh
+```
+
+The protocol is rate-independent, so tb_braid's CYCLE counts must not change —
+only the ns column, which is display. Update its `1000.0/257.8125` and
+tb_braid_sys's `UCLK_HALF` (1.9394 -> 1.28) and `GT_STAGES`.
+
+**If a cycle count moves, the echo-length change in Step 3 broke something.**
+
+- [ ] **Step 6: Build, then measure in this order**
+
+```
+sudo ./braid clock -l 2      # FIRST. Must read ~390.6 MHz.
+sudo ./braid bench  -l 2     # our fabric + our GT, symmetric, no peer
+sudo ./braid echo   --words 4    # far card
+sudo ./braid bench  --words 4    # near card, symmetric
+```
+
+`clock` first, always. If it does not read 390.6 the rate did not take, and
+every number after it is scaled by an unknown factor — which is precisely the
+trap that cost a full analysis cycle at 10.3125.
+
+- [ ] **Step 7: Fallback ladder if timing does not close**
+
+Do not fight 390.625 MHz. Drop a rung and re-measure:
+
+| rate | tx_clk | predicted one-way |
+|---|---|---|
+| 15.625 Gbps (x100) | 390.6 MHz | ~81 ns |
+| 12.5 Gbps (x80) | 312.5 MHz | ~98 ns |
+| 10.3125 Gbps (x66) | 257.8 MHz | 118 ns (today) |
+
+12.5 Gbps still lands just under target and is a far easier close. Take it
+rather than spending days on 390.
+
+Watch these paths in the timing report: the 992-bit masked compare in the
+checker, the 992-bit shift in `braid_link_tx`, and the 1012-bit handshake.
+
+- [ ] **Step 8: Also consider LPM**
+
+At 15.625 Gbps the Nyquist frequency rises from 5.16 to 7.81 GHz, and LPM is
+recommended only below ~14 dB of channel loss. If `rx_errors` moves at all,
+switch `RX_EQ_MODE` to DFE before blaming anything else.
+
 
 ### Task 4: Manual RXSLIDE alignment (Stage 4)
 
@@ -667,18 +772,223 @@ git commit -m "braid: manual RXSLIDE alignment, comma detect block bypassed once
 
 ---
 
+### Task 5: Cut the protocol's fixed cycle count (Stage 5) — NEW
+
+With I pinned at 40 and the rate at 15.625 Gbps, the protocol's **fixed** cost
+is the largest term we still control. F = 9 cycles at 2.56 ns is 23 ns, against
+a GT that will be ~37.
+
+Measured, not guessed: tb_braid Test 3 gives 10 cycles at 1 word and 1 cycle per
+word thereafter, so F = 9 exactly.
+
+Four cuts, each independently verifiable in simulation with zero hardware time:
+
+- [ ] **Step 1: Emit the header on `syn_valid` rather than a cycle later**
+
+`braid_link_tx` spends T_IDLE latching, then T_HDR emitting. The header is a
+pure function of `{tx_type, tx_words, tx_round}`, all available on the
+`syn_valid` cycle. Emit it directly and enter T_PAY. **-1 cycle.**
+
+- [ ] **Step 2: Carry the checksum in the EOF word**
+
+`braid_framer` already sends a dedicated EOF word, `{3x D16.2, K29.7}` — three
+data bytes doing nothing. Put the 16-bit Fletcher checksum in two of them and
+delete the T_CKS state and the whole checksum word from the frame. **-1 cycle
+on TX, -1 on RX**, and the frame gets a word shorter, which also shortens
+serialisation.
+
+- [ ] **Step 3: Cut-through RX**
+
+`braid_link_rx` asserts `syn_out_valid` only after validating the checksum. Emit
+on the last payload word instead and raise a separate `syn_out_bad` one cycle
+later if validation fails. **-1 cycle.**
+
+This is a real design decision, not just an optimisation, so state it plainly:
+the decoder starts on a syndrome that has not yet been checked, and is told a
+cycle later if it was wrong. For real-time QEC that is the right trade — a
+correction that arrives after the decode window has closed is worthless, so
+starting early and retracting beats waiting and being certain. It is the same
+reasoning that already makes this link drop-and-flag rather than retry. **If the
+consuming decoder cannot retract, do not take this step.**
+
+- [ ] **Step 4: Re-run the simulation and check the cycle counts moved**
+
+```bash
+cd /scratch/anubhav/Coyote/examples/16_braid/sim && ./run.sh
+```
+
+Expected: tb_braid Test 3 drops from 10 cycles at 1 word to ~6, and Test 1 and
+Test 2 still pass unchanged. **Test 2 matters most here** — it is the
+misalignment rejection test, and three of the four cuts touch framing.
+
+Target F = 5, worth **~10 ns** at 15.625 Gbps.
+
+---
+
+### Task 6: Shorter cable (Stage 6) — NEW, and do it first
+
+The two-card and loopback measurements differ by 11.6 ns, which is the output
+driver, the pads, the cable and the input stage. At 4.76 ns/m in a DAC, the ~2 m
+cable is ~9.6 ns of that — **8% of the current one-way latency.**
+
+- [ ] **Step 1: Fit the shortest QSFP28 DAC that will physically reach**
+
+0.5 m is standard and is ~2.4 ns. Saving ~7 ns.
+
+- [ ] **Step 2: Re-measure and confirm the delta is real**
+
+```
+sudo ./braid bench -l 2 --words 4     # unchanged -- loopback never used the cable
+sudo ./braid echo  --words 4          # far card
+sudo ./braid bench --words 4          # near card
+```
+
+The loopback number MUST NOT move. If it does, something other than the cable
+changed and the comparison is void.
+
+This requires no build, no RTL and no risk. It is the best nanoseconds per unit
+of effort available anywhere in this plan, and it should be done before Task 3
+so that Task 3's result is measured against the final channel.
+
+---
+
+## Levers closed out (2026-08-11)
+
+Two of the three remaining levers are now off the table, one by measurement and
+one by architecture. Recording both so nobody re-opens them.
+
+### Lever 1 (GT low-latency settings): DEAD, not reachable
+
+AMD's fintech note gets its transceiver latency from settings that
+`gtwizard_ultrascale` does not expose. Probed on GTYE4:
+
+| knob | result |
+|---|---|
+| `RX_SLIDE_MODE = PMA` | rejected, even with auto comma-align disabled. Only PCS/OFF. |
+| `RXSYNC_SKIP_DA` | not a wizard property |
+| `RX_XCLK_SEL` / `TX_XCLK_SEL` | not wizard properties |
+| `RX_INT_DATA_WIDTH = 20` | rejected |
+
+They are GT primitive attributes the wizard owns. Reaching them means
+instantiating `GTYE4_CHANNEL` directly and taking over reset sequencing, CDR
+bring-up and buffer-bypass control -- trading a working link for perhaps 7 ns.
+Not worth it at this stage. **This also closes Task 4**, which assumed PMA-mode
+RXSLIDE was available.
+
+**Found on the way:** `RX_BUFFER_BYPASS_MODE` reads back `MULTI` when we ask for
+`SINGLE`. It is the only one of the 23 properties braid sets that does not take.
+Almost certainly benign for latency -- it configures the bypass CONTROLLER, not
+the datapath -- but it invalidates the assumption that our dict is what is in
+the silicon, so verify readback rather than trusting set_property.
+
+### Lever 3 (multi-lane striping): DROPPED by design
+
+The four lanes of the QSFP cage are wanted for FOUR INDEPENDENT SYNDROME LINKS,
+not for striping one syndrome. Those two uses are mutually exclusive, and the
+independent-lane case is the intended end state.
+
+So the structural goal is not "make one link use four lanes", it is **"make one
+link cheap enough to instantiate four times"**. Fabric cost now counts 4x, which
+raises the value of the streaming protocol beyond its latency saving.
+
+### What is actually left, single lane
+
+| lever | delta | note |
+|---|---:|---|
+| streaming protocol (F 5 -> 3) | -5 | Task 7 below |
+| sparse syndrome encoding | -5 to -7 at d=11, more at high d | now the ONLY payload lever |
+| shorter cable | -7 | a purchase |
+| direct GTYE4_CHANNEL instantiation | -7 | high risk, large job |
+
+The transceiver is a hard floor at ~32 ns: I is stuck at 40, and the rate is
+capped by the 8B/10B ceiling and by the board reference being 156.25 MHz.
+Single-lane floor is therefore roughly:
+
+```
+32.2 GT + 7.7 protocol + 10.2 payload + 12.5 cable = 62.6 ns
+   with sparse encoding                            ~55 ns
+   with sparse encoding and a 0.5 m cable          ~48 ns
+```
+
+---
+
+## Pre-bitgen review (2026-08-12)
+
+### Bug found by reading the FSM, not by simulating it
+
+`phy_tx_cks` was driven combinationally from the running checksum registers.
+The framer reads it one cycle AFTER `braid_link_tx` has returned to T_IDLE, so
+a round starting on that cycle overwrote `tx_cka`/`tx_ckb` before the trailer
+went out: the frame was sent with the NEXT frame's partial checksum and the
+receiver reported a perfectly good frame as corrupt. Fixed by latching the
+value when the last payload word is issued.
+
+**The first version of the test for it PASSED against the broken RTL.**
+`send_rounds` pulses syn_valid every 2 cycles and a 4-word frame is 6 cycles, so
+the phase is locked even and never lands on the one cycle that matters. Holding
+syn_valid HIGH instead reproduces it immediately: 33 of 34 frames reported
+corrupt. tb_braid Test 5 now does that, and it was verified to fail without the
+fix before being accepted as a test.
+
+Lesson worth keeping: a one-cycle-wide window cannot be found with periodic
+stimulus whose period shares a factor with the frame length.
+
+### Rates above 15.625 Gbps: legal, but not taken
+
+The board reference is 156.25 MHz and the 8B/10B ceiling is 16.375 Gbps, so
+x101 through x104 are all reachable:
+
+| multiple | rate | fabric | vs 15.625 |
+|---|---|---|---|
+| x100 | 15.625 Gbps | 390.6 MHz | 1.000 |
+| x104 | 16.250 Gbps | 406.3 MHz | 1.040 |
+| x104.8 | 16.375 Gbps | rejected | -- |
+
+x104 is worth about 1.8 ns and costs 16 MHz of fabric clock on the build that
+already carries the most timing risk in this plan. Take it only once 390.6 MHz
+is known to close with margin. It is one value in
+`scripts/ip_inst/braid_infrastructure.tcl`.
+
+### Known measurement-harness limitation
+
+In echo mode the reflector marks frames with ITS OWN sparse bit rather than the
+type it received, exactly as it uses its own SYN_WORDS. Harmless for latency
+measurement -- nothing in the link interprets the payload -- but a two-card
+sparse test needs the bit set on both cards, the same way `--words` has to be.
+
+---
+
 ## Expected Cumulative Result
 
-| stage | change | expected one-way |
-|---|---|---|
-| baseline | RX buffer bypass | 289 ns |
-| 1 | PCS config | ~280 ns |
-| 2 | no fabric CDC | ~239 ns |
-| 3 | 25.78 G / 64-bit | ~150-180 ns |
-| 4 | manual alignment | ~165 ns |
+Measured, not projected, except the last row.
 
-Against Aurora's measured 201 ns one-way. **Sub-100 ns is not reachable on U280
-GTY** — the remaining floor is GT silicon latency.
+| stage | one-way at d=11 (4 words) | status |
+|---|---:|---|
+| baseline | 306 ns | measured |
+| after Task 2b (GT clocks, no CDC FIFOs) | **117.9 ns** | measured, symmetric two-card |
+| after Task 6 (0.5 m cable) | ~111 ns | projected, no build needed |
+| after Task 3 (15.625 Gbps) | ~74 ns | projected |
+| after Task 5 (protocol F 9->5) | ~64 ns | projected |
+| after Task 4 (PMA RXSLIDE) | ~58 ns | projected, least certain |
+
+The Task 2b figure is a direct symmetric measurement (`echo --words 4` /
+`bench --words 4`, RTT 272 ns, minus two 18.1 ns echo crossings), and it agrees
+to 0.3 ns with the independent reconstruction from near-end PMA loopback.
+
+Budget as measured after Task 2b:
+
+| term | ns | source |
+|---|---:|---|
+| protocol (braid_link + both framers) | 50.4 | tb_braid Test 3 |
+| GT (TX PMA + RX full) | 55.6 | `bench -l 2`, flat to +/-0.5 over a 6x payload range |
+| TX PCS + cable | 11.6 | residual |
+| **one-way** | **117.9** | direct measurement |
+
+Task 2b beat its own prediction by a wide margin: predicted ~98 ns off the round
+trip, delivered 236 ns. The 166 ns/direction that was unaccounted for at the
+start of this plan was mostly the CDC FIFO model being optimistic, not a slow
+transceiver. What remains is ~55 ns of genuine GT latency, which is what Task 3
+attacks.
 
 ## Risks
 

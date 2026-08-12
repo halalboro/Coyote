@@ -29,10 +29,17 @@ module braid_phy_shim (
     input  logic          phy_tx_valid,
     input  logic          phy_tx_last,
     output logic          phy_tx_ready,
+    input  logic [23:0]   phy_tx_hdr,
+    input  logic [23:0]   phy_tx_cks,
+    input  logic [1:0]    phy_tx_type,
     output logic [31:0]   phy_rx_data,
     output logic          phy_rx_valid,
-    output logic          phy_rx_last,
+    output logic          phy_rx_eof,
     output logic          phy_rx_err,
+    output logic [23:0]   phy_rx_hdr,
+    output logic          phy_rx_sof,
+    output logic [1:0]    phy_rx_type,
+    output logic [23:0]   phy_rx_cks,
 
     // ---- shell side: 256-bit AXI4-Stream, GT clock domains ----
     output logic [255:0]  shl_tx_tdata,     // tx_clk
@@ -45,7 +52,11 @@ module braid_phy_shim (
     output logic          shl_rx_tready
 );
 
-    assign shl_tx_tdata  = {224'b0, phy_tx_data};
+    // The shell stream is 256 bits and a protocol word is 32, so the sidebands
+    // ride in bits that were being wired to zero. No template change, no extra
+    // partition pins.
+    //   [31:0] data   [55:32] hdr   [79:56] cks   [81:80] type
+    assign shl_tx_tdata  = {174'b0, phy_tx_type, phy_tx_cks, phy_tx_hdr, phy_tx_data};
     assign shl_tx_tvalid = phy_tx_valid;
     assign shl_tx_tlast  = phy_tx_last;
     assign phy_tx_ready  = shl_tx_tready;
@@ -55,7 +66,14 @@ module braid_phy_shim (
     assign shl_rx_tready = 1'b1;
     assign phy_rx_data   = shl_rx_tdata[31:0];
     assign phy_rx_valid  = shl_rx_tvalid;
-    assign phy_rx_last   = shl_rx_tlast;
+    assign phy_rx_eof    = shl_rx_tlast;   // strobe, independent of tvalid
     assign phy_rx_err    = shl_rx_tdata[32];
+    // RX carries an err bit that TX does not, so the offsets differ from the
+    // transmit layout above by one. Do not "tidy" these into shared constants.
+    //   [32] err  [56:33] hdr  [80:57] cks  [82:81] type  [83] sof
+    assign phy_rx_hdr    = shl_rx_tdata[56:33];
+    assign phy_rx_cks    = shl_rx_tdata[80:57];
+    assign phy_rx_type   = shl_rx_tdata[82:81];
+    assign phy_rx_sof    = shl_rx_tdata[83];
 
 endmodule

@@ -89,7 +89,11 @@ module braid_gty_wrapper #(
     logic [3:0]  phy_dbg;
     logic [31:0] phy_tx_data, phy_rx_data;
     logic        phy_tx_valid, phy_tx_last, phy_tx_ready;
-    logic        phy_rx_valid, phy_rx_last, phy_rx_err;
+    logic [23:0] phy_tx_hdr, phy_tx_cks;
+    logic [1:0]  phy_tx_type;
+    logic        phy_rx_valid, phy_rx_eof, phy_rx_err, phy_rx_sof;
+    logic [1:0]  phy_rx_type;
+    logic [23:0] phy_rx_hdr, phy_rx_cks;
 
     // A build-time loopback image ignores the runtime select entirely, so it
     // cannot be talked out of loopback by software.
@@ -113,10 +117,17 @@ module braid_gty_wrapper #(
         .phy_tx_valid (phy_tx_valid),
         .phy_tx_last  (phy_tx_last),
         .phy_tx_ready (phy_tx_ready),
+        .phy_tx_hdr   (phy_tx_hdr),
+        .phy_tx_cks   (phy_tx_cks),
+        .phy_tx_type  (phy_tx_type),
         .phy_rx_data  (phy_rx_data),
         .phy_rx_valid (phy_rx_valid),
-        .phy_rx_last  (phy_rx_last),
+        .phy_rx_eof   (phy_rx_eof),
         .phy_rx_err   (phy_rx_err),
+        .phy_rx_hdr   (phy_rx_hdr),
+        .phy_rx_sof   (phy_rx_sof),
+        .phy_rx_type  (phy_rx_type),
+        .phy_rx_cks   (phy_rx_cks),
         .gt_refclk    (gt_refclk),
         .gt_rxp       (gt_rxp_in),
         .gt_rxn       (gt_rxn_in),
@@ -163,13 +174,26 @@ module braid_gty_wrapper #(
     // This is the entire point of Task 2b. Both used to run through a
     // packet-mode axis_data_fifo; both are now wire.
     assign phy_tx_data      = s_braid_tx.tdata[31:0];
+    assign phy_tx_hdr       = s_braid_tx.tdata[55:32];
+    assign phy_tx_cks       = s_braid_tx.tdata[79:56];
+    assign phy_tx_type      = s_braid_tx.tdata[81:80];
     assign phy_tx_valid     = s_braid_tx.tvalid;
     assign phy_tx_last      = s_braid_tx.tlast;
     assign s_braid_tx.tready = phy_tx_ready;
 
-    assign m_braid_rx.tdata  = {223'b0, phy_rx_err, phy_rx_data};
+    // [31:0] data  [32] err  [56:33] hdr  [80:57] cks  [82:81] type  [83] sof
+    // 84 bits used of 256. braid_phy_shim must split it at exactly these
+    // offsets -- the RX side carries an err bit that the TX side does not, so
+    // the two layouts are NOT the same and cannot share constants.
+    assign m_braid_rx.tdata  = {172'b0, phy_rx_sof, phy_rx_type, phy_rx_cks,
+                                phy_rx_hdr, phy_rx_err, phy_rx_data};
     assign m_braid_rx.tvalid = phy_rx_valid;
-    assign m_braid_rx.tlast  = phy_rx_last;
+    // NOT AXI4-Stream semantics. tlast is an independent end-of-frame STROBE
+    // that arrives on a cycle where tvalid is LOW, because the framer no longer
+    // holds a word back to align it with the final beat -- that hold was a
+    // cycle of latency on every syndrome. Nothing downstream treats this pair
+    // as a real AXIS stream; braid_phy_shim splits it straight back apart.
+    assign m_braid_rx.tlast  = phy_rx_eof;
     assign m_braid_rx.tkeep  = '1;
     // m_braid_rx.tready is ignored, exactly as the RX FIFO's ready was: there is
     // no useful response to backpressure on a real-time syndrome stream, and
