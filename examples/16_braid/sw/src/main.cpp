@@ -50,17 +50,36 @@ static void print_counters(coyote::cThread& t) {
 // lane exists, so per-lane status was redundant). See braid_phy_gty.phy_dbg.
 static void print_phy_dbg(uint64_t s) {
     uint64_t d = (s >> status::LANE_UP_LSB) & 0xF;
+    const bool aligned    = (d >> 0) & 1;
+    const bool ber_any    = (d >> 1) & 1;
+    const bool ber_heavy  = (d >> 2) & 1;
+    const bool bypass_err = (d >> 3) & 1;
+
     std::cout << "  phy_dbg=0x" << std::hex << d << std::dec
-              << "  byte_aligned=" << (d & 1)
-              << " comma_seen="    << ((d >> 1) & 1)
-              << " K_in_lane0="    << ((d >> 2) & 1)
-              << " K_misaligned="  << ((d >> 3) & 1) << "\n";
-    if ((d >> 3) & 1)
-        std::cout << "  >> K-char seen outside byte lane 0: comma alignment is "
-                     "wrong (check RX_COMMA_ALIGN_WORD).\n";
-    else if (!((d >> 2) & 1))
-        std::cout << "  >> no K-char ever seen in lane 0: nothing is arriving, "
-                     "or the far card is not transmitting.\n";
+              << "  rx_aligned="  << aligned
+              << " ber_any="      << ber_any
+              << " ber_heavy="    << ber_heavy
+              << " bypass_err="   << bypass_err << "\n";
+
+    // Ordered most-fundamental first: a bypass failure explains a bad line,
+    // and a bad line explains the error counters, so report the root and stop.
+    if (bypass_err)
+        std::cout << "  >> RX buffer-bypass alignment FAILED. The RX datapath is "
+                     "sampling at the wrong phase, so nothing below this is "
+                     "meaningful. This is a GT/refclk problem, not a cable one.\n";
+    else if (!aligned)
+        std::cout << "  >> the framer never found the ALIGN pattern: nothing is "
+                     "arriving, or the far card is not transmitting. In raw mode "
+                     "alignment is ours (rxslide), not the GT's -- expect it to "
+                     "take up to ~5.5 us after the line goes live.\n";
+    else if (ber_heavy)
+        std::cout << "  >> aligned, but erroring continuously (>=256 errors). "
+                     "That is a line-quality problem, not a bring-up transient.\n";
+    else if (ber_any)
+        std::cout << "  >> aligned, with a few errors. The counter is gated on "
+                     "rx_aligned, so these were NOT logged during the hunt -- a "
+                     "frame arriving in the window after alignment but before "
+                     "link_up is the benign explanation.\n";
 }
 
 static bool csr_ok(coyote::cThread& t) {

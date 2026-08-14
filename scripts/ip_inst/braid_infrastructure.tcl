@@ -3,22 +3,51 @@
 ##
 ## Gated by cfg(en_braid_gty). Consumed by hw/hdl/braid/braid_gty_wrapper.sv.
 ##
-## One GTY lane, 15.625 Gbps, 8B/10B (no 64B/66B gearbox), 32-bit user
-## datapath at 390.625 MHz, 156.25 MHz reference, TX and RX buffers bypassed.
+## One GTY lane, 12.5 Gbps, RAW encoding (no 8B/10B, no comma detector, no
+## 64B/66B gearbox), 32-bit user datapath at 390.625 MHz, 156.25 MHz
+## reference, TX and RX buffers bypassed.
 ##
-## WHY 15.625 AND NOT MORE. 156.25 x 100. Probed exhaustively on GTYE4:
-##   - GTY 8B/10B tops out at 16.375 Gbps. 17.5 and above are rejected.
-##   - The line rate must be an exact integer multiple of the board reference,
-##     which `braid clock` measured at 156.25 MHz (257.808 read against a
-##     257.8125 prediction). x100 is the largest multiple under the ceiling.
-##   - 25.78125 Gbps needs RAW encoding AND a 64-bit datapath AND a
-##     161.1328125 MHz reference. Not reachable, and not worth it: raw buys
-##     I=32 instead of 40 and no 25% line overhead, both 1.25x, both exactly
-##     cancelled by needing a 1.25x lower rate to hold the same fabric clock.
-##     8B/10B at 15.625 and raw at 12.5 both land on 79.9 ns predicted.
+## WHY RAW AT 12.5 AND NOT 8B/10B AT 15.625 (the previous configuration).
+## Measured on hardware: the GT's own PCS -- the block that does 8B/10B and
+## comma detection -- was 23.8 ns of a 31.8 ns transceiver, against 8.0 ns for
+## the PMA alone. Raw mode drops the PCS entirely; word alignment, DC balance
+## and framing move into braid_framer_raw (hw/hdl/braid) instead.
 ##
-## RX_COMMA_ALIGN_WORD STAYS AT 4. It is the datapath width in BYTES, and the
-## datapath is still 32 bits. Getting this wrong cost three build cycles.
+## 12.5 Gbps / 32-bit user width lands on the SAME 390.625 MHz TXPROGDIV_FREQ
+## fabric clock the 8B/10B configuration used (156.25 x 100 either way, since
+## raw's narrower effective payload and lack of 8B/10B's 25% line overhead
+## exactly cancel), so the design closes timing exactly as it did before --
+## nothing downstream of the GT needed to change clock. This configuration was
+## probed and confirmed accepted by the wizard.
+##
+## RX_COMMA_ALIGN_WORD STAYS AT 4, IN RAW MODE TOO. It is NOT an 8B/10B
+## property, and an earlier revision of this file was wrong to say the
+## RX_COMMA_* properties are rejected in raw mode -- all five are accepted
+## (verified by generating the IP with this exact dict). ALIGN_WORD is the one
+## that must be set, because in RXSLIDE_MODE=PCS it also sets the SLIDE SPAN:
+##
+##   UG578 "Manual Alignment": "a maximum of 40 bits of sliding is possible when
+##   RX_INT_DATAWIDTH = 1 (4-byte) and ALIGN_COMMA_WORD = 4" -- the slide
+##   position wraps back to 0 after ALIGN_COMMA_WORD x bits-per-character.
+##
+## In raw mode the character is a byte, so the wizard default of 1 gives an
+## 8-position slide window on a 32-bit word. braid_framer_raw's hunt FSM walks
+## one bit at a time expecting to sweep all 32 (tb_braid_raw proves convergence
+## from all 32 offsets, but against a testbench wire with a full 32-bit wrap,
+## which silicon would not have). With the default the deserialiser starts on an
+## arbitrary one of 32 phases and 24 of them are unreachable: rxslide cycles
+## through the same 8 forever, rx_aligned never asserts, link_up never rises.
+## Cold boot to cold boot that presents as an INTERMITTENTLY dead cable -- works
+## once, dead three times -- which is the most expensive symptom there is.
+##
+## Do NOT also add RX_COMMA_P_ENABLE/M_ENABLE. UG578 requires
+## RXPCOMMAALIGNEN=0 and RXMCOMMAALIGNEN=0 for RXSLIDE to work, and the wizard
+## already resolves them to 0; enabling them would break manual alignment.
+## Setting ALIGN_WORD alone leaves comma DETECTION off, as raw mode requires.
+##
+## Word alignment in raw mode otherwise comes from pulsing RXSLIDE_IN under
+## fabric control (RX_SLIDE_MODE PCS), which is why rxslide_in must be in
+## ENABLE_OPTIONAL_PORTS.
 ##############################################################################
 
 if {$cfg(en_braid_gty) eq 1} {
@@ -45,30 +74,33 @@ if {$cfg(en_braid_gty) eq 1} {
         ## see braid_phy_gty, where the framer's RX half is clocked separately
         ## from its TX half.
         ##
-        ## SHOW_REALIGN_COMMA=FALSE is documented in UG578 as "This setting
-        ## reduces RX datapath latency" -- the comma that caused a realignment is
-        ## not brought out to the RX interface. braid_framer never inspects it,
-        ## so this is free.
-        ##
         ## RX_EQ_MODE=LPM: UG578 recommends LPM for channels with under 14 dB
         ## loss at Nyquist, and a 1-3 m QSFP28 DAC is well inside that. There is
         ## no documented latency claim for LPM -- it is here to be measured.
         ## REVERT TO AUTO if rx_errors moves at all; LPM adaptation is the only
         ## plausible cause and it is the speculative half of this change.
         ##
-        ## NOT available to us, despite AMD's fintech blog citing ~13 ns for it:
-        ## a 16-bit INTERNAL datapath. With 8B/10B the internal width must be a
-        ## multiple of 10 and this wizard only offers 40 -- int=20 is rejected at
-        ## every user width (verified). A narrow internal path implies raw mode,
-        ## i.e. owning scrambling and frame sync.
+        ## RAW MODE (TX/RX_DATA_ENCODING RAW, TX/RX_INT_DATA_WIDTH 32). Raw
+        ## drops the PCS's 8B/10B and comma-detect logic entirely, which is the
+        ## whole latency win -- but it also means the GT no longer does word
+        ## alignment, DC balance or framing at all; braid_framer_raw
+        ## (hw/hdl/braid) now owns all three.
         ##
-        ## RX_COMMA_ALIGN_WORD is the comma alignment granularity in BYTES. The
-        ## default of 1 lets the aligner drop the comma on ANY byte boundary --
-        ## lane 0, 1, 2 or 3 of our 4-byte word. braid_phy_gty tests lane 0
-        ## only, so with the default the K-character usually lands where it
-        ## never looks and no SOF is ever detected: rx_frames=0 AND rx_errors=0,
-        ## which reads as a dead link rather than a misconfiguration. 4 forces
-        ## the comma onto the word boundary, i.e. always lane 0.
+        ## INTERNAL WIDTH IS 32, NOT 16, and that is deliberate. AMD's fintech
+        ## blog cites ~13 ns for a 16-bit internal datapath, which 8B/10B could
+        ## not reach (internal width must be a multiple of 10 there, and the
+        ## wizard only offered 40). Raw mode does expose 16 -- but it buys
+        ## nothing here. The internal width must equal the user width or the GT
+        ## inserts a gearbox, and a gearbox is exactly the buffering this whole
+        ## change exists to delete. Holding int = user = 16 instead would put
+        ## the fabric at 781.25 MHz, which this design does not close at. 32/32
+        ## is the widest setting that keeps the gearbox out at 390.625 MHz.
+        ##
+        ## RX_SLIDE_MODE PCS + rxslide_in in ENABLE_OPTIONAL_PORTS: without a
+        ## comma detector, word alignment is done by pulsing RXSLIDE_IN from
+        ## fabric logic (braid_framer_raw's alignment FSM) until the received
+        ## word matches the framer's W_ALIGN pattern. PCS-domain sliding (as
+        ## opposed to PMA) is what UG578 pairs with buffer-bypass raw mode.
         ##
         ## CHANNEL_ENABLE is PART-SPECIFIC and is the one value in this dict that
         ## did NOT carry over from the probe part (xcu55c accepts X0Y0; the U280
@@ -81,25 +113,24 @@ if {$cfg(en_braid_gty) eq 1} {
             CONFIG.CHANNEL_ENABLE       X0Y44 \
             CONFIG.TX_MASTER_CHANNEL    X0Y44 \
             CONFIG.RX_MASTER_CHANNEL    X0Y44 \
-            CONFIG.TX_LINE_RATE         15.625 \
-            CONFIG.RX_LINE_RATE         15.625 \
+            CONFIG.TX_LINE_RATE         12.5 \
+            CONFIG.RX_LINE_RATE         12.5 \
             CONFIG.TX_REFCLK_FREQUENCY  156.25 \
             CONFIG.RX_REFCLK_FREQUENCY  156.25 \
-            CONFIG.TX_DATA_ENCODING     8B10B \
-            CONFIG.RX_DATA_DECODING     8B10B \
+            CONFIG.TX_DATA_ENCODING     RAW \
+            CONFIG.RX_DATA_DECODING     RAW \
+            CONFIG.TX_INT_DATA_WIDTH    32 \
+            CONFIG.RX_INT_DATA_WIDTH    32 \
             CONFIG.TX_USER_DATA_WIDTH   32 \
             CONFIG.RX_USER_DATA_WIDTH   32 \
             CONFIG.TX_BUFFER_MODE       0 \
             CONFIG.RX_BUFFER_MODE       0 \
             CONFIG.RX_BUFFER_BYPASS_MODE SINGLE \
-            CONFIG.RX_COMMA_P_ENABLE    true \
-            CONFIG.RX_COMMA_M_ENABLE    true \
-            CONFIG.RX_COMMA_PRESET      K28.5 \
+            CONFIG.RX_SLIDE_MODE        PCS \
             CONFIG.RX_COMMA_ALIGN_WORD  4 \
-            CONFIG.RX_COMMA_SHOW_REALIGN_ENABLE false \
             CONFIG.RX_EQ_MODE           LPM \
             CONFIG.FREERUN_FREQUENCY    100 \
-            CONFIG.ENABLE_OPTIONAL_PORTS {loopback_in rxbufstatus_out} \
+            CONFIG.ENABLE_OPTIONAL_PORTS {rxslide_in loopback_in rxbufstatus_out} \
         ] [get_ips braid_gty]
     }
 

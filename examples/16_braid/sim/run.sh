@@ -2,7 +2,10 @@
 # Standalone simulation -- no GT, no Coyote, no bitstream.
 #
 #   lint_elab      ELABORATES both real hierarchies -- shell and vFPGA
-#   tb_braid       protocol: framing, checksums, rounds, misalignment rejection
+#   tb_braid_scram scrambler: self-sync round-trip, DC balance on all-zeros
+#   tb_braid_align ALIGN pattern: unique rotation, DC balance, transition-rich
+#   tb_braid_raw   braid_framer_raw: aligner converges from all 32 bit offsets
+#   tb_braid       protocol: framing, checksums, rounds, misalignment recovery
 #   tb_braid_cdc   the clock crossing, at its real 1012-bit width
 #   tb_braid_sys   predicted one-way latency, 10.3125 vs 15.625 Gbps
 #
@@ -23,6 +26,8 @@ xvlog -sv -L xpm -i ../hw/src lint_elab.sv \
       ../hw/src/hdl/braid_link_rx.sv \
       ../hw/src/hdl/braid_cdc_event.sv \
       ../hw/src/hdl/braid_phy_shim.sv \
+      ../../../hw/hdl/braid/braid_framer_raw.sv \
+      ../../../hw/hdl/braid/braid_scrambler.sv \
       ../../../hw/hdl/braid/braid_framer.sv \
       ../../../hw/hdl/braid/braid_phy_gty.sv \
       ../../../hw/hdl/braid/braid_gty_wrapper.sv \
@@ -32,11 +37,31 @@ xelab -L xpm -L unisims_ver -timescale 1ns/1ps lint_user_tb  glbl -s lint_user
 echo "  both hierarchies elaborate"
 
 echo
+echo "########## tb_braid_scram: scrambler"
+xvlog -sv tb_braid_scram.sv ../../../hw/hdl/braid/braid_scrambler.sv
+xelab -debug typical tb_braid_scram -s tb_scram
+xsim tb_scram -R
+
+echo
+echo "########## tb_braid_align: ALIGN pattern properties"
+xvlog -sv tb_braid_align.sv
+xelab tb_braid_align -s tb_align
+xsim tb_align -R
+
+echo
+echo "########## tb_braid_raw: alignment from all 32 offsets"
+xvlog -sv tb_braid_raw.sv ../../../hw/hdl/braid/braid_scrambler.sv \
+          ../../../hw/hdl/braid/braid_framer_raw.sv
+xelab -debug typical tb_braid_raw -s tb_raw
+xsim tb_raw -R
+
+echo
 echo "########## tb_braid: protocol"
 xvlog -sv tb_braid.sv \
       ../hw/src/hdl/braid_link_tx.sv \
       ../hw/src/hdl/braid_link_rx.sv \
-      ../../../hw/hdl/braid/braid_framer.sv
+      ../../../hw/hdl/braid/braid_framer_raw.sv \
+      ../../../hw/hdl/braid/braid_scrambler.sv
 xelab -debug typical tb_braid -s tb_braid_sim
 xsim tb_braid_sim -R
 

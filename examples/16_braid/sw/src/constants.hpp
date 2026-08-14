@@ -18,7 +18,11 @@ constexpr uint32_t VFPGA_ID = 0;
 // that is where the datapath now lives. Using ACLK_MHZ to convert an RTT gives
 // an answer 55% too small.
 constexpr double   ACLK_MHZ = 400.0;
-constexpr double   TXCLK_MHZ = 390.625;    // 15.625 Gbps / 10 bits / 4 chars
+// Raw-mode GT: 12.5 Gbps line rate / 32-bit datapath = 390.625 MHz. Unchanged
+// from the earlier 8B/10B configuration (15.625 Gbps / 10 bits / 4 chars),
+// which landed on the same fabric clock by design -- see
+// scripts/ip_inst/braid_infrastructure.tcl.
+constexpr double   TXCLK_MHZ = 390.625;
 
 namespace reg {
 constexpr uint32_t CTRL        = 0;    // RW

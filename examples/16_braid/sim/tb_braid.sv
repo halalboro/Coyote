@@ -1,21 +1,30 @@
 /**
  * BRAID protocol testbench
  *
- * Two complete braid_link + braid_framer stacks wired back to back, with the
- * GT replaced by a direct connection of {txdata, txcharisk} to
- * {rxdata, rxcharisk}. That is exactly what a working, correctly-aligned GT
- * delivers, so this exercises the whole framing and protocol path without the
- * transceiver's simulation model.
+ * Two complete braid_link + braid_framer_raw stacks wired back to back, with
+ * the GT replaced by a direct 32-bit connection from one framer's gt_txdata
+ * to the other's gt_rxdata. That is exactly what a working, correctly-aligned
+ * raw-mode GT delivers, so this exercises the whole framing and protocol path
+ * without the transceiver's simulation model.
  *
- * Deliberately also models the failure that cost three hardware builds: set
- * MISALIGN to a non-zero byte count and the receiver sees the byte stream
- * rotated, which is what RX_COMMA_ALIGN_WORD=1 does on real silicon. The test
- * asserts that a correctly aligned link passes AND that a misaligned one is
- * caught rather than silently delivering bad syndromes.
+ * Also models the failure that used to cost three hardware builds under
+ * 8B/10B, in its raw-mode shape: set MISALIGN to a non-zero BIT count and,
+ * combined with a b_rstn_rx pulse (Test 2), the receiving framer's aligner
+ * starts hunting from a rotated bit boundary -- what an arbitrary GT lock
+ * offset looks like on real silicon.
+ *
+ * *** TEST 2 CHANGED MEANING WHEN THE PHY WENT RAW -- READ THE COMMENT AT
+ * TEST 2 BELOW BEFORE ASSUMING YOU KNOW WHAT IT CHECKS. *** Under 8B/10B a
+ * misaligned comma just stayed wrong and nothing was ever delivered; that is
+ * what this test used to assert. Raw mode's aligner is designed to recover
+ * from exactly this fault, so the old assertion would now be asserting that
+ * the recovery logic is broken. Test 2 now asserts the opposite: the link
+ * RE-LOCKS and resumes delivering frames correctly.
  *
  *   xvlog -sv tb_braid.sv ../hw/src/hdl/braid_link_tx.sv \
  *                          ../hw/src/hdl/braid_link_rx.sv \
- *              ../../../hw/hdl/braid/braid_framer.sv
+ *              ../../../hw/hdl/braid/braid_framer_raw.sv \
+ *              ../../../hw/hdl/braid/braid_scrambler.sv
  *   xelab -debug typical tb_braid -s tb && xsim tb -R
  */
 
@@ -31,15 +40,32 @@ module tb_braid;
 
     // ------------------------------------------------------------ A -> B
     logic [31:0] a_txdata, b_rxdata;
-    logic [7:0]  a_txctrl2;
-    logic [15:0] b_rxctrl0;
     logic [31:0] b_txdata, a_rxdata;
-    logic [7:0]  b_txctrl2;
-    logic [15:0] a_rxctrl0;
 
-    // Byte rotation applied to the A->B direction, modelling a comma that
-    // aligned to the wrong lane. 0 = correct alignment.
+    // Bit-rotation offset applied to the A->B wire, modelling the raw-mode
+    // deserialiser landing at an arbitrary bit boundary -- what
+    // RX_COMMA_ALIGN_WORD misalignment modelled for 8B/10B, rxslide now
+    // walks back one bit at a time instead (see braid_framer_raw's alignment
+    // FSM, and tb_braid_raw.sv, which is where this bit-rotating wire model
+    // is copied from). 0 = correct alignment. Changing MISALIGN alone has no
+    // effect: it is only loaded into b_offset (below) while b_rstn_rx is
+    // held low, so a deliberate b_rstn_rx pulse is required too -- see
+    // Test 2 for why.
     int MISALIGN = 0;
+
+    // RX-domain reset for u_fr_b ONLY, separate from the testbench-wide
+    // `rstn`. Pulsing it low re-arms u_fr_b's alignment FSM (back to A_HUNT)
+    // against whatever MISALIGN currently is, without touching u_fr_a or
+    // resetting braid_link_a/b's frame/error/gap counters. See Test 2.
+    logic b_rstn_rx;
+
+    // Declared HERE (rather than down in the "A: sender" section with the
+    // rest of u_link_a_tx's ports) because the corrupt-word logic below reads
+    // them: SystemVerilog requires a declaration to textually precede its
+    // first use (xvlog VRFC 10-3380, "used before its declaration") -- unlike
+    // C, module-scope order is NOT just documentation here. Declared, not
+    // left as implicit nets, for the reason the comment below explains.
+    logic a_ptx_valid, a_ptx_ready;
 
     // Framer sidebands. Declared HERE, above the first instance that uses them:
     // below it, Verilog's implicit-net rule silently turns each into an
@@ -48,64 +74,69 @@ module tb_braid;
     logic [23:0] a_rhdr, a_rcks, b_rhdr, b_rcks;
     logic        a_rsof, b_rsof;
 
+    // Raw-framer alignment/BER sidebands. New in raw mode -- 8B/10B had no
+    // equivalent (comma lock was instantaneous per-word, not a hunted state).
+    logic        a_rxslide, b_rxslide;
+    logic        a_aligned, b_aligned;
+    logic [15:0] a_ber, b_ber;
 
-    // Corrupts one bit of the Nth data word of the A->B frame, counting from
-    // SOF. Models a bit error that 8B/10B happens not to catch, which is
+    // Corrupts one bit of the Nth payload word of the A->B frame, counting
+    // from 1 at the first payload word (the header/marker word is never
+    // targeted). Models a bit error that survives to the decoder, which is
     // exactly the case cut-through delivery has to handle correctly: the
-    // syndrome is already at the decoder by the time the checksum says it was
-    // wrong.
+    // syndrome is already at the decoder by the time the checksum says it
+    // was wrong.
     int  CORRUPT_WORD = 0;    // 0 = off
-    int  corrupt_cnt  = 0;
-    bit  corrupt_arm  = 0;
+    int  corrupt_cnt  = 0;    // payload words consumed THIS frame, before now
 
-    // The "wire": previous word plus current word, rotated by MISALIGN bytes.
+    // The "wire": previous word plus current word, rotated by b_offset bits.
+    // b_offset is the live rotation state: loaded from MISALIGN while
+    // b_rstn_rx is low, decremented by one on every rxslide pulse u_fr_b's
+    // aligner issues afterwards -- mirroring tb_braid_raw.sv's
+    // offset/offset_load model, including the reason it has exactly one
+    // procedural writer (see that testbench's comment on the point).
     logic [31:0] a_txdata_q;
-    logic [7:0]  a_txctrl2_q;
-    always_ff @(posedge clk) begin
-        a_txdata_q  <= a_txdata;
-        a_txctrl2_q <= a_txctrl2;
+    int          b_offset;
+
+    always_ff @(posedge clk) a_txdata_q <= a_txdata;
+
+    // Edge-sensitive for the same reason tb_braid_raw.sv is: UG578 gives one
+    // bit of slide per rxslide PULSE (min two cycles high, >32 low between),
+    // not one per cycle high.
+    logic b_rxslide_q;
+    always @(posedge clk) begin
+        b_rxslide_q <= b_rxslide;
+        if (!b_rstn_rx)                     b_offset <= MISALIGN % 32;
+        else if (b_rxslide && !b_rxslide_q) b_offset <= (b_offset + 31) % 32;
     end
 
     always_comb begin
-        case (MISALIGN)
-            1: begin
-                b_rxdata  = {a_txdata[7:0],   a_txdata_q[31:8]};
-                b_rxctrl0 = {12'b0, a_txctrl2[0],   a_txctrl2_q[3:1]};
-            end
-            2: begin
-                b_rxdata  = {a_txdata[15:0],  a_txdata_q[31:16]};
-                b_rxctrl0 = {12'b0, a_txctrl2[1:0], a_txctrl2_q[3:2]};
-            end
-            3: begin
-                b_rxdata  = {a_txdata[23:0],  a_txdata_q[31:24]};
-                b_rxctrl0 = {12'b0, a_txctrl2[2:0], a_txctrl2_q[3]};
-            end
-            default: begin
-                b_rxdata  = a_txdata;
-                b_rxctrl0 = {12'b0, a_txctrl2[3:0]};
-            end
-        endcase
-        if (CORRUPT_WORD != 0 && corrupt_cnt == CORRUPT_WORD && b_rxctrl0[3:0] == 4'b0)
+        b_rxdata = (b_offset == 0) ? a_txdata
+                 : ((a_txdata << (32 - b_offset)) | (a_txdata_q >> b_offset));
+        // Only meaningful with MISALIGN==0 (Test 4, the only user of
+        // CORRUPT_WORD): flips a bit in the wire word carrying payload word
+        // CORRUPT_WORD of the A->B frame.
+        if (CORRUPT_WORD != 0 && a_ptx_valid && a_ptx_ready &&
+            (corrupt_cnt + 1) == CORRUPT_WORD)
             b_rxdata = b_rxdata ^ 32'h0000_0010;
     end
 
-    // Counts data words since the last SOF, so CORRUPT_WORD selects a position
-    // within the frame rather than an absolute time.
+    // Counts payload words since the start of the current frame, using the
+    // link_tx<->framer handshake directly (a_ptx_valid && a_ptx_ready) rather
+    // than snooping the wire -- raw mode has no per-word marker on the wire
+    // to snoop for. Self-resetting: it drops to 0 on every cycle that is not
+    // an active payload cycle, which happens between every pair of frames
+    // (T_IDLE/T_HDR/T_EOF all deassert phy_tx_ready), so no separate
+    // start-of-frame edge detector is needed.
     always @(posedge clk) begin
-        if (!rstn) begin
+        if (!rstn || !(a_ptx_valid && a_ptx_ready))
             corrupt_cnt <= 0;
-            corrupt_arm <= 0;
-        end else if (a_txctrl2[0] && a_txdata[7:0] == 8'hFB) begin   // K27.7 SOF
-            corrupt_cnt <= 1;
-            corrupt_arm <= 1;
-        end else if (corrupt_arm && a_txctrl2[3:0] == 4'b0) begin
+        else
             corrupt_cnt <= corrupt_cnt + 1;
-        end
     end
 
     // B -> A is always clean; only one direction is exercised for syndromes.
-    assign a_rxdata  = b_txdata;
-    assign a_rxctrl0 = {12'b0, b_txctrl2[3:0]};
+    assign a_rxdata = b_txdata;
 
     // ------------------------------------------------------- A: sender
     logic [N_STAB-1:0] a_syn_bits;
@@ -113,7 +144,10 @@ module tb_braid;
     logic [15:0]       a_syn_round;
     logic [7:0]        a_words;
     logic [31:0]       a_ptx_data, a_prx_data;
-    logic              a_ptx_valid, a_ptx_last, a_ptx_ready;
+    // a_ptx_valid, a_ptx_ready declared earlier (A -> B wire model needs
+    // them before this point) -- see the comment there. Only a_ptx_last is
+    // new here.
+    logic              a_ptx_last;
     logic              a_prx_valid, a_prx_last, a_prx_err;
     logic [31:0]       a_txf, a_txd, a_rxf, a_rxe, a_rxg;
     logic [N_STAB-1:0] a_syn_out;
@@ -145,18 +179,19 @@ module tb_braid;
         .rx_frames(a_rxf), .rx_errors(a_rxe), .rx_gaps(a_rxg)
     );
 
-    braid_framer u_fr_a (
+    braid_framer_raw u_fr_a (
         .clk_tx(clk), .rstn_tx(rstn), .link_up_tx(1'b1),
-        .clk_rx(clk), .rstn_rx(rstn), .link_up_rx(1'b1),
         .phy_tx_data(a_ptx_data), .phy_tx_valid(a_ptx_valid),
         .phy_tx_last(a_ptx_last), .phy_tx_ready(a_ptx_ready),
         .phy_tx_hdr(a_hdr), .phy_tx_cks(a_cks), .phy_tx_type(2'd0),
+        .gt_txdata(a_txdata),
+        .clk_rx(clk), .rstn_rx(rstn), .link_up_rx(1'b1),
         .phy_rx_data(a_prx_data), .phy_rx_valid(a_prx_valid),
-        .phy_rx_eof(a_prx_last), .phy_rx_sof(a_rsof), .phy_rx_hdr(a_rhdr),
-        .phy_rx_type(), .phy_rx_cks(a_rcks), .phy_rx_err(a_prx_err),
-        .gt_txdata(a_txdata), .gt_txctrl2(a_txctrl2),
-        .gt_rxdata(a_rxdata), .gt_rxctrl0(a_rxctrl0),
-        .gt_rxctrl1(16'b0), .gt_rxctrl3(8'b0),
+        .phy_rx_eof(a_prx_last), .phy_rx_err(a_prx_err),
+        .phy_rx_hdr(a_rhdr), .phy_rx_sof(a_rsof),
+        .phy_rx_type(), .phy_rx_cks(a_rcks),
+        .gt_rxdata(a_rxdata),
+        .rxslide(a_rxslide), .rx_aligned(a_aligned), .ber_count(a_ber),
         .dbg(a_dbg)
     );
 
@@ -197,18 +232,23 @@ module tb_braid;
         .rx_frames(b_rxf), .rx_errors(b_rxe), .rx_gaps(b_rxg)
     );
 
-    braid_framer u_fr_b (
+    braid_framer_raw u_fr_b (
         .clk_tx(clk), .rstn_tx(rstn), .link_up_tx(1'b1),
-        .clk_rx(clk), .rstn_rx(rstn), .link_up_rx(1'b1),
         .phy_tx_data(b_ptx_data), .phy_tx_valid(b_ptx_valid),
         .phy_tx_last(b_ptx_last), .phy_tx_ready(b_ptx_ready),
         .phy_tx_hdr(b_hdr), .phy_tx_cks(b_cks), .phy_tx_type(2'd0),
+        .gt_txdata(b_txdata),
+        // rstn_rx is b_rstn_rx, NOT the testbench-wide rstn: Test 2 pulses
+        // this on its own to force u_fr_b's aligner to re-hunt against a
+        // forced bit misalignment. See the b_rstn_rx declaration above and
+        // the Test 2 comment below.
+        .clk_rx(clk), .rstn_rx(b_rstn_rx), .link_up_rx(1'b1),
         .phy_rx_data(b_prx_data), .phy_rx_valid(b_prx_valid),
-        .phy_rx_eof(b_prx_last), .phy_rx_sof(b_rsof), .phy_rx_hdr(b_rhdr),
-        .phy_rx_type(), .phy_rx_cks(b_rcks), .phy_rx_err(b_prx_err),
-        .gt_txdata(b_txdata), .gt_txctrl2(b_txctrl2),
-        .gt_rxdata(b_rxdata), .gt_rxctrl0(b_rxctrl0),
-        .gt_rxctrl1(16'b0), .gt_rxctrl3(8'b0),
+        .phy_rx_eof(b_prx_last), .phy_rx_err(b_prx_err),
+        .phy_rx_hdr(b_rhdr), .phy_rx_sof(b_rsof),
+        .phy_rx_type(), .phy_rx_cks(b_rcks),
+        .gt_rxdata(b_rxdata),
+        .rxslide(b_rxslide), .rx_aligned(b_aligned), .ber_count(b_ber),
         .dbg(b_dbg)
     );
 
@@ -245,6 +285,31 @@ module tb_braid;
         end
     endtask
 
+    // Raw mode has no instant comma lock: braid_framer_raw's aligner has to
+    // hunt, one rxslide pulse at a time, until LOCK_COUNT consecutive ALIGN
+    // words confirm it. tb_braid_raw.sv measured a worst case of 2078 clock
+    // cycles across all 32 possible starting bit offsets, so protocol tests
+    // must not assume alignment is immediate -- this waits for the real
+    // rx_aligned signal on both framers (with a generous timeout as a safety
+    // net, not as the expected duration) rather than a fixed short delay.
+    localparam int ALIGN_TIMEOUT = 3000;
+    task automatic wait_aligned(input string label);
+        int cyc;
+        cyc = 0;
+        while (!(a_aligned && b_aligned) && cyc < ALIGN_TIMEOUT) begin
+            @(posedge clk);
+            cyc++;
+        end
+        if (!(a_aligned && b_aligned)) begin
+            $display("  *** FAIL: %s -- alignment not reached after %0d cycles (a=%b b=%b) ***",
+                     label, cyc, a_aligned, b_aligned);
+            $finish;
+        end else begin
+            $display("  [%s] alignment acquired after %0d cycles (a=%b b=%b)",
+                     label, cyc, a_aligned, b_aligned);
+        end
+    endtask
+
     // Score B's received syndromes against the expected pattern.
     // Plain `always`, not `always_ff`: the stimulus block also resets these
     // counters between tests, and always_ff forbids a second procedural driver.
@@ -264,9 +329,15 @@ module tb_braid;
     initial begin
         sent = 0; recvd = 0; bad = 0;
         a_syn_bits = '0; a_syn_valid = 0; a_syn_round = '0; a_words = 8'd0;
+        b_rstn_rx = 1'b0;
         repeat (20) @(posedge clk);
         rstn = 1;
+        b_rstn_rx = 1'b1;
         repeat (20) @(posedge clk);
+
+        // Give both raw-mode aligners time to lock before trusting anything
+        // downstream of them -- see wait_aligned's comment.
+        wait_aligned("startup");
 
         // ---- Test 1: correctly aligned link ----
         $display("\n=== Test 1: aligned link, 64 rounds ===");
@@ -288,22 +359,60 @@ module tb_braid;
             $finish;
         end
 
-        // ---- Test 2: misaligned by one byte ----
-        // Models RX_COMMA_ALIGN_WORD=1 putting the comma in the wrong lane.
-        // The link must NOT silently deliver corrupted syndromes.
-        $display("\n=== Test 2: 1-byte misalignment (must be caught) ===");
-        MISALIGN = 1;
+        // ---- Test 2: bit misalignment -- raw mode RECOVERS, unlike 8B/10B ----
+        //
+        // *** THIS TEST'S MEANING CHANGED WHEN THE PHY WENT RAW. READ THIS. ***
+        // Under 8B/10B, RX_COMMA_ALIGN_WORD misalignment put the comma in the
+        // wrong lane and it just stayed there -- there was no recovery path,
+        // so this test used to assert that a misaligned link delivers
+        // NOTHING ("PASS: nothing delivered (frames rejected)"). Raw mode has
+        // no comma and no fixed lane: braid_framer_raw's alignment FSM pulses
+        // rxslide, one bit at a time, until the received word matches
+        // W_ALIGN (tb_braid_raw.sv proves this converges from all 32 possible
+        // starting bit offsets). So the SAME underlying fault -- the
+        // deserialiser landing at the wrong bit boundary -- is now something
+        // the link is SUPPOSED to recover from, and the old assertion would
+        // now be asserting that the recovery logic is broken. The correct,
+        // and opposite, assertion is that after a forced misalignment the
+        // link RE-LOCKS (via rxslide) and resumes delivering frames
+        // correctly.
+        //
+        // Why this needs a b_rstn_rx pulse and not just a MISALIGN change:
+        // braid_framer_raw only re-hunts from A_LOCKED after 255 CONFIRMED
+        // one-word glitches (idle_glitch_pending in that module) -- a
+        // deliberate choice so a single bit error never tears down a good
+        // lock. A wire that is CONTINUOUSLY misaligned never produces that
+        // "idle, one bad word, idle again" pattern -- it never looks idle at
+        // all -- so that path alone would never re-hunt here. What IS
+        // representative of the real fault (a GT lock landing at a bad bit
+        // offset at power-up or after a re-lock) is the aligner starting
+        // fresh from A_HUNT against an already-misaligned wire, which is
+        // exactly what pulsing u_fr_b's own rstn_rx models. That pulse
+        // touches only u_fr_b's alignment/frame-reception state, not the
+        // testbench-wide `rstn`, so braid_link_a/b's frame/error/gap counters
+        // are undisturbed by the pulse itself.
+        $display("\n=== Test 2: bit misalignment, aligner recovers via rxslide ===");
+        MISALIGN = 5;    // arbitrary non-zero bit offset. Convergence from
+                          // ALL 32 offsets is already proven in
+                          // tb_braid_raw.sv; this proves that one of them
+                          // round-trips the WHOLE protocol stack (link_tx,
+                          // framer, scrambler, link_rx, checksum) correctly
+                          // after recovery, which tb_braid_raw.sv cannot --
+                          // it has no braid_link on either end.
         recvd = 0; bad = 0;
+        b_rstn_rx = 1'b0;
+        repeat (10) @(posedge clk);
+        b_rstn_rx = 1'b1;
+        wait_aligned("Test 2 re-lock");
         send_rounds(32, 20);
         repeat (200) @(posedge clk);
         $display("  delivered=%0d mismatches=%0d rx_errors=%0d dbg_b=%b",
                  recvd, bad, b_rxe, b_dbg);
-        if (bad == 0 && recvd == 0)
-            $display("  PASS: nothing delivered (frames rejected)");
-        else if (bad > 0)
-            $display("  PASS: corruption detected and flagged");
+        if (recvd == 32 && bad == 0)
+            $display("  PASS: link recovered from misalignment and delivered %0d/32 frames cleanly", recvd);
         else
-            $display("  *** FAIL: delivered %0d frames as good ***", recvd);
+            $display("  *** FAIL: link did not recover from misalignment (delivered=%0d mismatches=%0d) ***",
+                     recvd, bad);
 
         // ---- Test 3: protocol latency decomposition ----
         // The "wire" here is a direct connection, so this measures ONLY
@@ -340,9 +449,9 @@ module tb_braid;
         // every corrupt frame must raise syn_out_bad, and the round must not
         // advance -- so the next good frame reports the gap.
         //
-        // Test 2 covers misalignment, where nothing is delivered at all. This
-        // covers the opposite and more dangerous case: a frame that looks
-        // perfectly well formed until its last word.
+        // Test 2 covers misalignment, where recovery happens before any frame
+        // is accepted. This covers a different and more dangerous case: a
+        // frame that looks perfectly well formed until its last word.
         $display("\n=== Test 4: corrupt payload, cut-through + retract ===");
         MISALIGN = 0;
         a_words  = 8'd4;

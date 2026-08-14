@@ -88,15 +88,10 @@ module braid_gty (
     input  wire        gtyrxn_in, gtyrxp_in,
     input  wire [2:0]  loopback_in,
     output wire [2:0]  rxbufstatus_out,
-    input  wire        rx8b10ben_in, rxcommadeten_in, rxmcommaalignen_in, rxpcommaalignen_in,
-    input  wire        rxusrclk_in, rxusrclk2_in, tx8b10ben_in,
-    input  wire [15:0] txctrl0_in, txctrl1_in,
-    input  wire [7:0]  txctrl2_in,
+    input  wire        rxslide_in,
+    input  wire        rxusrclk_in, rxusrclk2_in,
     input  wire        txusrclk_in, txusrclk2_in,
     output wire        gtpowergood_out, gtytxn_out, gtytxp_out,
-    output wire        rxbyteisaligned_out, rxbyterealign_out, rxcommadet_out,
-    output wire [15:0] rxctrl0_out, rxctrl1_out,
-    output wire [7:0]  rxctrl2_out, rxctrl3_out,
     output wire        rxoutclk_out, rxpmaresetdone_out,
     output wire        txoutclk_out, txpmaresetdone_out, txprgdivresetdone_out
 );
