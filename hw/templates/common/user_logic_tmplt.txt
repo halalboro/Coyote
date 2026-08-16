@@ -115,6 +115,14 @@ module design_user_logic_c{{ c_cnfg }}_{{ c_reg }} (
     output wire[2:0]            braid_loopback_sel,
 {% endif %}
 
+{% if cnfg.en_amc and c_reg == 0 %}
+    // On-card R5<->vFPGA OCM mailbox (Example 15). A raw 32-bit AXI4 master out
+    // of the vFPGA that the shell routes to the CIPS S_AXI_LPD -> OCM, plus a
+    // doorbell interrupt to the R5 (pl_ps_irq1). AMC only, region 0.
+    AXI4.m                      m_axi_ocm,
+    output logic                ocm_irq,
+{% endif %}
+
     // Clock and reset
     input  wire                 aclk,
     input  wire[0:0]            aresetn

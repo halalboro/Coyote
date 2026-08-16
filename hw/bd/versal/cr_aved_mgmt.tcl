@@ -161,5 +161,106 @@ proc cr_bd_design_aved_mgmt { parentCell } {
       -target_address_space [get_bd_addr_spaces versal_cips_0/M_AXI_LPD] \
       [get_bd_addr_segs gcq_m2r/S01_AXI/S01_AXI_Reg] -force
 
+  ########################################################################################################
+  # Example 15 — vFPGA -> R5 OCM channel (S_AXI_LPD -> OCM) + wake IRQ
+  ########################################################################################################
+  # The vFPGA's ocm_mbx drives a 32-bit AXI4 master that arrives here as the
+  # external BD slave s_axi_ocm (threaded shell -> static -> BD, see
+  # static_top/cyt_top). ocm_sc (SmartConnect) width-adapts 32b -> S_AXI_LPD and
+  # forwards it into the CIPS LPD, which routes writes/reads to OCM @0xFFFC0000.
+  # ocm_irq feeds pl_ps_irq1 to wake the R5. Everything runs on the shell clock
+  # (clk_wiz_0/clk_out1), the same clock the vFPGA (en_uclk=0) uses, so there is
+  # no clock crossing — s_axi_lpd_aclk is driven from the same clk_out1.
+  puts "  ** Instantiating Example 15 OCM channel (s_axi_ocm -> S_AXI_LPD) + pl_ps_irq1"
+
+  # External BD slave port for the vFPGA OCM master. Pinned to 32b data / 64b
+  # addr / 1b id with the full AXI4 sideband so the design_static wrapper emits
+  # exactly the s_axi_ocm_* flat ports that static_top connects to.
+  set s_axi_ocm [ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 s_axi_ocm ]
+  set_property -dict [list \
+    CONFIG.PROTOCOL   {AXI4} \
+    CONFIG.DATA_WIDTH {32} \
+    CONFIG.ADDR_WIDTH {64} \
+    CONFIG.ID_WIDTH   {1} \
+    CONFIG.HAS_BURST  {1} \
+    CONFIG.HAS_LOCK   {1} \
+    CONFIG.HAS_CACHE  {1} \
+    CONFIG.HAS_PROT   {1} \
+    CONFIG.HAS_QOS    {1} \
+    CONFIG.HAS_REGION {1} \
+    CONFIG.HAS_WSTRB  {1} \
+    CONFIG.NUM_READ_OUTSTANDING  {1} \
+    CONFIG.NUM_WRITE_OUTSTANDING {1} \
+  ] $s_axi_ocm
+
+  # Associate s_axi_ocm with the shell clock (xclk == clk_out1 domain) exactly
+  # like axi_main / the p2p external ports (cr_pci.tcl:224). This tells Vivado
+  # the port is synchronous to xclk, clearing the "not associated to any clock"
+  # (41-2559) warning and the SmartConnect clock-domain/frequency DRCs, and lets
+  # the port inherit the achieved shell-clock frequency.
+  if {[llength [get_bd_ports -quiet xclk]]} {
+    set _xb [get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports xclk]]
+    if {[lsearch [split $_xb ":"] "s_axi_ocm"] < 0} {
+      set_property CONFIG.ASSOCIATED_BUSIF "$_xb:s_axi_ocm" [get_bd_ports xclk]
+    }
+  }
+
+  # External BD input for the vFPGA -> R5 doorbell IRQ.
+  set ocm_irq [ create_bd_port -dir I ocm_irq ]
+
+  # SmartConnect: 32b s_axi_ocm -> S_AXI_LPD (single clock, no CDC).
+  set ocm_sc [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect ocm_sc ]
+  set_property -dict [list \
+    CONFIG.NUM_CLKS {1} \
+    CONFIG.NUM_MI   {1} \
+    CONFIG.NUM_SI   {1} \
+  ] $ocm_sc
+
+  connect_bd_intf_net $s_axi_ocm                        [get_bd_intf_pins ocm_sc/S00_AXI]
+  connect_bd_intf_net [get_bd_intf_pins ocm_sc/M00_AXI] [get_bd_intf_pins versal_cips_0/S_AXI_LPD]
+
+  # Clocks: shell clock everywhere on this path (matches the vFPGA aclk).
+  connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins ocm_sc/aclk]
+  connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins versal_cips_0/s_axi_lpd_aclk]
+
+
+  # Reset: reuse the same PCIe DMA AXI reset the GCQ path uses.
+  if {$cnfg(pcie_gen) eq 5} {
+    connect_bd_net [get_bd_pins versal_cips_0/dma1_axi_aresetn] [get_bd_pins ocm_sc/aresetn]
+  } else {
+    connect_bd_net [get_bd_pins versal_cips_0/dma0_axi_aresetn] [get_bd_pins ocm_sc/aresetn]
+  }
+
+  # IRQ: pl_ps_irq1 was tied to const_0/dout by cr_pci.tcl. Disconnect and route
+  # the vFPGA doorbell to it (mirrors the pl_ps_irq0/GCQ retarget above).
+  set old_irq1 [get_bd_nets -of_objects [get_bd_pins versal_cips_0/pl_ps_irq1]]
+  if {$old_irq1 ne ""} {
+    delete_bd_objs $old_irq1
+  }
+  connect_bd_net $ocm_irq [get_bd_pins versal_cips_0/pl_ps_irq1]
+
+  # Address: map OCM (0xFFFC0000, 256 KB) into the s_axi_ocm master's view.
+  # Verified against the real CIPS: S_AXI_LPD exposes the OCM RAM as segment
+  # versal_cips_0/S_AXI_LPD/pspmc_0_psv_ocm_ram_0 (alongside ocm_ctrl/ocm_xmpu,
+  # hence the *ocm_ram* match), default-unassigned, range 0x40000. Assigning it
+  # at 0xFFFC0000 validated clean (probe: external master -> SmartConnect ->
+  # S_AXI_LPD -> OCM). The -addressables/-of_objects query form returns nothing
+  # for a raw external-port space, so match over the full segment list instead.
+  set _ocm_space [get_bd_addr_spaces s_axi_ocm]
+  set _ocm_seg ""
+  foreach _s [get_bd_addr_segs] {
+    if {[string match -nocase "*versal_cips_0/S_AXI_LPD*ocm_ram*" $_s]} { set _ocm_seg $_s; break }
+  }
+  if {$_ocm_seg ne ""} {
+    assign_bd_address -offset 0xFFFC0000 -range 256K \
+        -target_address_space $_ocm_space [get_bd_addr_segs $_ocm_seg] -force
+  } else {
+    puts "  ** ERROR: OCM RAM segment not found under versal_cips_0/S_AXI_LPD"
+  }
+
+  # NB: s_axi_ocm's FREQ_HZ is inherited (read-only) from its xclk association
+  # above — it resolves to the achieved shell-clock frequency automatically, so
+  # no explicit FREQ_HZ set is needed (and would error 41-737 as read-only).
+
   current_bd_instance $oldCurInst
 }

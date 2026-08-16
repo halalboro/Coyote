@@ -24,3 +24,8 @@ add_subdirectory(../../../sw ${CMAKE_BINARY_DIR}/coyote)
 add_executable(amc_vfpga_demo src/amc_vfpga_demo.cpp)
 target_link_libraries(amc_vfpga_demo PUBLIC Coyote Boost::program_options)
 set_property(TARGET amc_vfpga_demo PROPERTY CXX_STANDARD 17)
+
+# 3) 'ocm_verdict' — reads the R5's vFPGA<->R5 OCM channel self-test verdict from
+#    the AMC DDR window (raw MMAP_AMC mmap, no Coyote runtime). See amc.c/ocm_mbx.sv.
+add_executable(ocm_verdict src/ocm_verdict.cpp)
+set_property(TARGET ocm_verdict PROPERTY CXX_STANDARD 17)

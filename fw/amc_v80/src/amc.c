@@ -85,6 +85,31 @@
 #define AMC_TASK_SLEEP_MS             ( 100 )
 #define AMC_GET_PROJECT_INFO_SLEEP_MS ( 1000 )
 
+/* ---- Example 15: on-card R5 <-> vFPGA OCM channel self-test --------------- */
+/* The vFPGA's ocm_mbx runs a small mailbox in OCM (word offsets below). The R5
+ * posts a "+1 over N words" request, the vFPGA reads it over S_AXI_LPD, computes,
+ * writes the result back into OCM and bumps V2C_SEQ (also pulses pl_ps_irq1).
+ * This exercises the full vFPGA<->R5 OCM path. Base = top 4 KB of OCM
+ * (0xFFFC0000 + 0x40000 - 0x1000); OCM is otherwise unused by AMC (lscript.ld). */
+#ifndef EN_OCM_SELFTEST
+#define EN_OCM_SELFTEST               ( 1 )
+#endif
+#define OCM_MBX_BASE                  ( 0xFFFFF000u )
+#define OCM_OFF_C2V_SEQ               ( 0x00 )   /* R5   -> vFPGA doorbell        */
+#define OCM_OFF_OPCODE                ( 0x04 )   /* R5   : 1 = +1 over the window */
+#define OCM_OFF_N_WORDS               ( 0x08 )   /* R5   : payload length         */
+#define OCM_OFF_V2C_SEQ               ( 0x10 )   /* vFPGA: = C2V_SEQ when done     */
+#define OCM_OFF_RCODE                 ( 0x14 )   /* vFPGA: 0 ok, 1 bad op, 2 big   */
+#define OCM_OFF_OUT_WORDS             ( 0x18 )   /* vFPGA: words produced          */
+#define OCM_OFF_DATA                  ( 0x40 )   /* both : data window             */
+#define OCM_OP_INC                    ( 1 )
+#define OCM_TEST_WORDS                ( 8 )
+#define OCM_WAIT_ITERS                ( 1000000u )  /* bounded spin on V2C_SEQ */
+/* Compact verdict mirror for the host, in the AMC DDR window (BAR4 0x0A000000 +
+ * this offset). Top 64 KB of the 32 MB window, clear of AMC's shared mem @0x100000. */
+#define OCM_VERDICT_DDR               ( 0x01FF0000u )
+#define OCM_VERDICT_MAGIC             ( 0x4F434D54u )   /* "OCMT" */
+
 
 /******************************************************************************/
 /* Enums                                                                      */
@@ -185,6 +210,14 @@ static int iInitDebug( void );
  * @return  N/A
  */
 static void vTaskFuncMain( void );
+
+#if ( 1 == EN_OCM_SELFTEST )
+/**
+ * @brief   Exercise the vFPGA<->R5 OCM channel once and record a verdict.
+ * @return  N/A
+ */
+static void vOcmSelfTest( void );
+#endif
 
 /**
  * @brief   Configure the partition table stored at the start of
@@ -411,11 +444,103 @@ static void vTaskFuncMain( void )
              "ucOutOfBandInitialised          %s\n\r",
              ( ullAmcInitStatus & AMC_CFG_OUT_OF_BAND_INITIALISED      ? "TRUE" : "FALSE" ) );
 
+#if ( 1 == EN_OCM_SELFTEST )
+    /* Once the platform is up, exercise the vFPGA<->R5 OCM channel. */
+    vOcmSelfTest();
+#endif
+
     FOREVER
     {
         iOSAL_Task_SleepMs( AMC_TASK_SLEEP_MS );
     }
 }
+
+#if ( 1 == EN_OCM_SELFTEST )
+/**
+ * @brief   Post a "+1 over N words" request into the OCM mailbox, wait for the
+ *          vFPGA to service it, verify the result, log PASS/FAIL and mirror a
+ *          compact verdict to the host-visible AMC DDR window.
+ */
+static void vOcmSelfTest( void )
+{
+    uint32_t i, seq, v2c = 0, rc = 0xFFFFFFFF, mism = 0, ok = 1;
+
+    PLL_LOG( AMC_NAME, "OCM self-test: start (mbx @ 0x%08X)\r\n", OCM_MBX_BASE );
+
+    /* Quiesce the header so any power-on garbage can't look like a request. */
+    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_OPCODE );
+    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_N_WORDS );
+    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_V2C_SEQ );
+    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_C2V_SEQ );
+
+    /* Seed the input window: DATA[i] = 0x100 + i. */
+    for( i = 0; i < OCM_TEST_WORDS; i++ )
+    {
+        HAL_IO_WRITE32( 0x100 + i, OCM_MBX_BASE + OCM_OFF_DATA + ( i << 2 ) );
+    }
+
+    /* Command, then doorbell last: the vFPGA latches the command on the edge. */
+    HAL_IO_WRITE32( OCM_OP_INC,     OCM_MBX_BASE + OCM_OFF_OPCODE );
+    HAL_IO_WRITE32( OCM_TEST_WORDS, OCM_MBX_BASE + OCM_OFF_N_WORDS );
+    seq = 1;
+    HAL_IO_WRITE32( seq, OCM_MBX_BASE + OCM_OFF_C2V_SEQ );
+
+    /* Bounded spin until the vFPGA publishes V2C_SEQ == seq. */
+    for( i = 0; i < OCM_WAIT_ITERS; i++ )
+    {
+        v2c = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_V2C_SEQ );
+        if( v2c == seq )
+        {
+            break;
+        }
+    }
+
+    if( v2c != seq )
+    {
+        PLL_ERR( AMC_NAME, "OCM self-test: TIMEOUT (V2C=0x%08X seq=0x%08X)\r\n", v2c, seq );
+        ok = 0;
+    }
+    else
+    {
+        rc = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_RCODE );
+        if( 0 != rc )
+        {
+            PLL_ERR( AMC_NAME, "OCM self-test: vFPGA RCODE=0x%08X\r\n", rc );
+            ok = 0;
+        }
+        for( i = 0; i < OCM_TEST_WORDS; i++ )
+        {
+            uint32_t got = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_DATA + ( i << 2 ) );
+            uint32_t exp = ( 0x100 + i ) + 1;
+            if( got != exp )
+            {
+                if( 0 == mism )
+                {
+                    PLL_ERR( AMC_NAME, "OCM self-test: DATA[%d]=0x%08X exp 0x%08X\r\n", (int) i, got, exp );
+                }
+                mism++;
+                ok = 0;
+            }
+        }
+    }
+
+    if( ok )
+    {
+        PLL_LOG( AMC_NAME, "OCM self-test: PASS (%d words +1 round-trip)\r\n", OCM_TEST_WORDS );
+    }
+    else
+    {
+        PLL_ERR( AMC_NAME, "OCM self-test: FAIL (mismatches=%d)\r\n", (int) mism );
+    }
+
+    /* Host-visible verdict: write payload first, magic last (host polls magic).
+     *   +0x04 pass (1/0)  +0x08 mismatches  +0x0C vFPGA rcode (0xFFFFFFFF=timeout) */
+    HAL_IO_WRITE32( ok ? 1u : 0u, OCM_VERDICT_DDR + 0x04 );
+    HAL_IO_WRITE32( mism,         OCM_VERDICT_DDR + 0x08 );
+    HAL_IO_WRITE32( rc,           OCM_VERDICT_DDR + 0x0C );
+    HAL_IO_WRITE32( OCM_VERDICT_MAGIC, OCM_VERDICT_DDR + 0x00 );
+}
+#endif
 
 /**
  * @brief   Main entry point
@@ -1081,3 +1206,4 @@ static void vConfigurePartitionTable( void )
     HAL_FLUSH_CACHE_DATA( ( HAL_RPU_SHARED_MEMORY_BASE_ADDR + xPartTable.xStatus.ulStatusOff ),
                           xPartTable.xStatus.ulStatusLen );
 }
+

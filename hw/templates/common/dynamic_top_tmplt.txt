@@ -43,9 +43,15 @@ module design_dynamic_top #(
         
 {% endif %}
 {% if cnfg.en_mem %}
-    // AXI4 DDR 
+    // AXI4 DDR
     AXI4.m									    m_axi_ddr [1+N_REGIONS*N_CARD_AXI],
-    
+
+{% endif %}
+{% if cnfg.en_amc %}
+    // OCM mailbox: vFPGA (region 0) raw AXI master out -> shell -> S_AXI_LPD -> OCM,
+    // plus the doorbell irq to the R5 (pl_ps_irq1). aclk domain (en_uclk=0).
+    AXI4.m                                      m_axi_ocm,
+    output logic                                ocm_irq,
 {% endif %}
 {% if cnfg.en_strm %}
     // AXI4S host
@@ -1193,6 +1199,50 @@ module design_dynamic_top #(
         .axi_ctrl_wready                (axi_ctrl_user_ul[{{ i }}].wready),
         .axi_ctrl_wstrb                 (axi_ctrl_user_ul[{{ i }}].wstrb),
         .axi_ctrl_wvalid                (axi_ctrl_user_ul[{{ i }}].wvalid),
+
+{% if cnfg.en_amc and i == 0 %}
+        // OCM MAILBOX MASTER (region 0 only, AMC). Flat wrapper ports <-> port interface.
+        .m_axi_ocm_awid                 (m_axi_ocm.awid),
+        .m_axi_ocm_awaddr               (m_axi_ocm.awaddr),
+        .m_axi_ocm_awlen                (m_axi_ocm.awlen),
+        .m_axi_ocm_awsize               (m_axi_ocm.awsize),
+        .m_axi_ocm_awburst              (m_axi_ocm.awburst),
+        .m_axi_ocm_awlock               (m_axi_ocm.awlock),
+        .m_axi_ocm_awcache              (m_axi_ocm.awcache),
+        .m_axi_ocm_awprot               (m_axi_ocm.awprot),
+        .m_axi_ocm_awqos                (m_axi_ocm.awqos),
+        .m_axi_ocm_awregion             (m_axi_ocm.awregion),
+        .m_axi_ocm_awvalid              (m_axi_ocm.awvalid),
+        .m_axi_ocm_awready              (m_axi_ocm.awready),
+        .m_axi_ocm_wdata                (m_axi_ocm.wdata),
+        .m_axi_ocm_wstrb                (m_axi_ocm.wstrb),
+        .m_axi_ocm_wlast                (m_axi_ocm.wlast),
+        .m_axi_ocm_wvalid               (m_axi_ocm.wvalid),
+        .m_axi_ocm_wready               (m_axi_ocm.wready),
+        .m_axi_ocm_bid                  (m_axi_ocm.bid),
+        .m_axi_ocm_bresp                (m_axi_ocm.bresp),
+        .m_axi_ocm_bvalid               (m_axi_ocm.bvalid),
+        .m_axi_ocm_bready               (m_axi_ocm.bready),
+        .m_axi_ocm_arid                 (m_axi_ocm.arid),
+        .m_axi_ocm_araddr               (m_axi_ocm.araddr),
+        .m_axi_ocm_arlen                (m_axi_ocm.arlen),
+        .m_axi_ocm_arsize               (m_axi_ocm.arsize),
+        .m_axi_ocm_arburst              (m_axi_ocm.arburst),
+        .m_axi_ocm_arlock               (m_axi_ocm.arlock),
+        .m_axi_ocm_arcache              (m_axi_ocm.arcache),
+        .m_axi_ocm_arprot               (m_axi_ocm.arprot),
+        .m_axi_ocm_arqos                (m_axi_ocm.arqos),
+        .m_axi_ocm_arregion             (m_axi_ocm.arregion),
+        .m_axi_ocm_arvalid              (m_axi_ocm.arvalid),
+        .m_axi_ocm_arready              (m_axi_ocm.arready),
+        .m_axi_ocm_rid                  (m_axi_ocm.rid),
+        .m_axi_ocm_rdata                (m_axi_ocm.rdata),
+        .m_axi_ocm_rresp                (m_axi_ocm.rresp),
+        .m_axi_ocm_rlast                (m_axi_ocm.rlast),
+        .m_axi_ocm_rvalid               (m_axi_ocm.rvalid),
+        .m_axi_ocm_rready               (m_axi_ocm.rready),
+        .ocm_irq                        (ocm_irq),
+{% endif %}
 
         // NOTIFY
         .notify_valid                   (notify_ul[{{ i }}].valid),

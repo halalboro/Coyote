@@ -1,8 +1,8 @@
 /**
  * Coyote Example 15: AMC Ping — functional vFPGA (host loopback +1).
  *
- * Replaces the Phase-A placeholder with a real, simple kernel so the vFPGA and
- * the AMC can be exercised together in one bitstream:
+ * A simple kernel so the vFPGA and the AMC can be exercised together in one
+ * bitstream:
  *
  *   host memory  ->  vFPGA  ->  host memory
  *
@@ -24,6 +24,20 @@ perf_local inst_host_link (
     .axis_out   (axis_host_send[0]),
     .aclk       (aclk),
     .aresetn    (aresetn)
+);
+
+// On-card R5 <-> vFPGA channel through OCM (Example 15). ocm_mbx drives the
+// m_axi_ocm master (shell -> CIPS S_AXI_LPD -> OCM at 0xFFFF_F000) to run a
+// mailbox in OCM, and raises ocm_irq (-> pl_ps_irq1) to wake the R5. The R5
+// reads/writes the same OCM natively. See docs/superpowers/specs/2026-08-12-*.
+ocm_mbx #(
+    .OCM_BASE (64'h0000_0000_FFFF_F000),
+    .N_DATA   (32)
+) inst_ocm_mbx (
+    .aclk     (aclk),
+    .aresetn  (aresetn),
+    .m_axi    (m_axi_ocm),
+    .irq      (ocm_irq)
 );
 
 // Tie off unused interfaces

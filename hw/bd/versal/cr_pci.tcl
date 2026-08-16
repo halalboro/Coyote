@@ -29,6 +29,8 @@
 source "[file dirname [info script]]/cr_aved_mgmt.tcl" -notrace
 source "[file dirname [info script]]/cr_ddr4_v80.tcl" -notrace
 
+# on Versal. Sourcing is unconditional (no side effects until called).
+
 # Static layer
 proc cr_bd_design_static { parentCell } {
   upvar #0 cfg cnfg
@@ -146,6 +148,17 @@ proc cr_bd_design_static { parentCell } {
     CONFIG.PROTOCOL {AXI4} \
   ] $axi_debug_hub
 
+  # AXI-MM master interface per vFPGA. Each slave carries wrapper->NoC
+  # writes (from axis_to_mm bridge, Stage 2); each master delivers
+  # NoC->wrapper writes (to mm_to_axis bridge). Full N×N connectivity is
+    # NS send-group slave ports (shell drives, NoC consumes)
+      # the AR/R channels removes them from the design_static wrapper flat ports, so
+      # they never cross an SLR boundary as fabric SLLs (~45% fewer crossing wires).
+    }
+    # M hub master ports (NoC drives, shell consumes -> mm_to_axis_demux)
+    }
+  }
+
   # QDMA status
   set h2c_status [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:eqdma_qsts_rtl:1.0 h2c_status ]
   set c2h_status [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:qdma_c2h_status_rtl:1.0 c2h_status ]
@@ -187,8 +200,15 @@ proc cr_bd_design_static { parentCell } {
 
   # Main clock
   set xclk [ create_bd_port -dir O -type clk xclk ]
+  # Bind the shell-clock (333 MHz) AXI interfaces to xclk so they inherit its
+  # interfaces (whose aclk0 is also driven by clk_wiz_0/clk_out1). Otherwise the
+  # ports default to 100 MHz and validate_bd_design fails with BD 41-237.
+  set xclk_busif "m_axis_h2c:s_axis_c2h:axi_cnfg:axi_main:axi_debug_hub"
+    }
+    }
+  }
   set_property -dict [ list \
-    CONFIG.ASSOCIATED_BUSIF {m_axis_h2c:s_axis_c2h:axi_cnfg:axi_main:axi_debug_hub} \
+    CONFIG.ASSOCIATED_BUSIF $xclk_busif \
     CONFIG.ASSOCIATED_RESET {xresetn:sresetn:eos_resetn} \
   ] $xclk
 
@@ -623,8 +643,18 @@ proc cr_bd_design_static { parentCell } {
   # finalize the R5-0 subsystem with TCM_0_A/B ownership in the generated CDO.
   #
   # AMC-only (V80): leave non-AMC builds on the stock CIPS behaviour.
+  # PS_USE_S_AXI_LPD {1} exposes the PL->LPD slave port that the Example 15 OCM
+  # channel (vFPGA ocm_mbx) uses to reach the R5's OCM @0xFFFC0000. Its clock
+  # (s_axi_lpd_aclk) and the S_AXI_LPD interface are wired in cr_aved_mgmt.tcl,
+  # which runs (and is validated) later in this same EN_AMC path.
   if {$cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1} {
     set_property -dict [list CONFIG.PS_PMC_CONFIG_APPLIED {1}] $versal_cips_0
+    # PS_USE_S_AXI_LPD is a KEY inside the CONFIG.PS_PMC_CONFIG dict, not a
+    # top-level CIPS parameter. Read-modify-write so all other keys are kept and
+    # only the EN_AMC path enables the slave (non-AMC builds untouched).
+    set _ppc [get_property CONFIG.PS_PMC_CONFIG $versal_cips_0]
+    dict set _ppc PS_USE_S_AXI_LPD 1
+    set_property CONFIG.PS_PMC_CONFIG $_ppc $versal_cips_0
   }
 
   # AXI NoC
@@ -877,6 +907,33 @@ proc cr_bd_design_static { parentCell } {
 
   # Debug Hub config
   connect_bd_intf_net [get_bd_intf_pins axi_noc_0/M03_AXI] [get_bd_intf_ports axi_debug_hub]
+
+  # ============================================================
+  # ============================================================
+  # V80's Gen-1 NoC IP (axi_noc:1.1) is AXI-MM only; AXIS transport is
+  # handled by soft axis_to_mm/mm_to_axis bridges in the wrapper (Stage 2).
+
+    # sclk_f — 333 MHz on V80), which is clk_wiz_0/clk_out1 (NOT the raw
+    # 100 MHz pl0_ref_clk). Driving aclk0 from clk_wiz_0/clk_out1 makes the
+    # NoC SI/MI interfaces resolve to the shell frequency so they match the
+    # via CONFIG.ASSOCIATED_BUSIF above). Mismatch here => BD 41-237.
+    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
+
+    # Wire external ports to NoC endpoints. NS send-group SIs, M hub MIs.
+      set idx [format "%02d" $i]
+      # SI (wrapper -> NoC): external slave port drives NoC SI
+    }
+      set idx [format "%02d" $h]
+      # MI (NoC -> wrapper): NoC hub MI drives external master port
+    }
+
+    # Address map: BASE=0x210_0000_0000 (above the axi_noc_0 memory apertures at
+    # 0x201/0x202_4/0x208), per-endpoint window = 256 MB (0x1000_0000). Each MI j
+    # gets aperture [BASE + j*WINDOW, +WINDOW); the NoC decodes an SI write there
+    # to MI j. Bridges (Stage 2) discard the low bits. Set via CONFIG.APERTURES on
+    # the MI pins (external PL ports have no /Reg segment for assign_bd_address).
+  }
+
 ########################################################################################################
 # Create port connections
 ########################################################################################################

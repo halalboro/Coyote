@@ -321,6 +321,15 @@ module cyt_top (
     // AXI Interfaces: config, data & command
     AXI4 axi_main_st2sh ();
 
+{% if cnfg.en_amc %}
+    // Example 15 — vFPGA <-> R5 OCM channel. Reverse of axi_main: the SHELL is
+    // the master (ocm_mbx in the vFPGA) and the STATIC is the slave (BD
+    // S_AXI_LPD -> OCM @0xFFFC0000). ocm_irq -> pl_ps_irq1 wakes the R5.
+    // 32-bit data / 64-bit addr / 1-bit id, matching ocm_mbx and shell_top.
+    AXI4 #(.AXI4_DATA_BITS(32), .AXI4_ADDR_BITS(64), .AXI4_ID_BITS(1)) axi_ocm_sh2st ();
+    wire ocm_irq;
+{% endif %}
+
     AXI4S axis_dyn_st2sh [N_SCHAN] ();
     AXI4S axis_dyn_sh2st [N_SCHAN] ();
     dmaIntf dma_rd_req_sh2st [N_SCHAN] ();
@@ -421,6 +430,11 @@ module cyt_top (
         // Debug 
         .m_axi_debug_hub(axi_debug_hub_st2sh),
 
+{% if cnfg.en_amc %}
+        // Example 15 — OCM channel (static slave side) + R5 wake IRQ
+        .s_axi_ocm(axi_ocm_sh2st),
+        .ocm_irq(ocm_irq),
+{% endif %}
         // Writeback
         .s_wback(wback_sh2st),
 
@@ -799,6 +813,50 @@ module cyt_top (
         .s_axi_debug_hub_bvalid(axi_debug_hub_st2sh.bvalid),
     {% endif %}
 
+{% if cnfg.en_amc %}
+        // Example 15 — OCM channel: shell master (ocm_mbx) -> static slave.
+        // Flat ports here map 1:1 onto the axi_ocm_sh2st interface members.
+        .m_axi_ocm_awid(axi_ocm_sh2st.awid),
+        .m_axi_ocm_awaddr(axi_ocm_sh2st.awaddr),
+        .m_axi_ocm_awlen(axi_ocm_sh2st.awlen),
+        .m_axi_ocm_awsize(axi_ocm_sh2st.awsize),
+        .m_axi_ocm_awburst(axi_ocm_sh2st.awburst),
+        .m_axi_ocm_awlock(axi_ocm_sh2st.awlock),
+        .m_axi_ocm_awcache(axi_ocm_sh2st.awcache),
+        .m_axi_ocm_awprot(axi_ocm_sh2st.awprot),
+        .m_axi_ocm_awqos(axi_ocm_sh2st.awqos),
+        .m_axi_ocm_awregion(axi_ocm_sh2st.awregion),
+        .m_axi_ocm_awvalid(axi_ocm_sh2st.awvalid),
+        .m_axi_ocm_awready(axi_ocm_sh2st.awready),
+        .m_axi_ocm_wdata(axi_ocm_sh2st.wdata),
+        .m_axi_ocm_wstrb(axi_ocm_sh2st.wstrb),
+        .m_axi_ocm_wlast(axi_ocm_sh2st.wlast),
+        .m_axi_ocm_wvalid(axi_ocm_sh2st.wvalid),
+        .m_axi_ocm_wready(axi_ocm_sh2st.wready),
+        .m_axi_ocm_bid(axi_ocm_sh2st.bid),
+        .m_axi_ocm_bresp(axi_ocm_sh2st.bresp),
+        .m_axi_ocm_bvalid(axi_ocm_sh2st.bvalid),
+        .m_axi_ocm_bready(axi_ocm_sh2st.bready),
+        .m_axi_ocm_arid(axi_ocm_sh2st.arid),
+        .m_axi_ocm_araddr(axi_ocm_sh2st.araddr),
+        .m_axi_ocm_arlen(axi_ocm_sh2st.arlen),
+        .m_axi_ocm_arsize(axi_ocm_sh2st.arsize),
+        .m_axi_ocm_arburst(axi_ocm_sh2st.arburst),
+        .m_axi_ocm_arlock(axi_ocm_sh2st.arlock),
+        .m_axi_ocm_arcache(axi_ocm_sh2st.arcache),
+        .m_axi_ocm_arprot(axi_ocm_sh2st.arprot),
+        .m_axi_ocm_arqos(axi_ocm_sh2st.arqos),
+        .m_axi_ocm_arregion(axi_ocm_sh2st.arregion),
+        .m_axi_ocm_arvalid(axi_ocm_sh2st.arvalid),
+        .m_axi_ocm_arready(axi_ocm_sh2st.arready),
+        .m_axi_ocm_rid(axi_ocm_sh2st.rid),
+        .m_axi_ocm_rdata(axi_ocm_sh2st.rdata),
+        .m_axi_ocm_rresp(axi_ocm_sh2st.rresp),
+        .m_axi_ocm_rlast(axi_ocm_sh2st.rlast),
+        .m_axi_ocm_rvalid(axi_ocm_sh2st.rvalid),
+        .m_axi_ocm_rready(axi_ocm_sh2st.rready),
+        .ocm_irq(ocm_irq),
+{% endif %}
         // Writeback
         .m_wback_valid(wback_sh2st.valid),
         .m_wback_ready(wback_sh2st.ready),

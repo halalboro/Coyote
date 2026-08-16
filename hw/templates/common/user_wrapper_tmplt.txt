@@ -318,6 +318,51 @@ module design_user_wrapper_{{ c_reg }} (
     (* io_buffer_type = "none" *) input  logic                              dresetn,
 {% endif %}
 
+{% if cnfg.en_amc and c_reg == 0 %}
+    // OCM mailbox: vFPGA raw 32-bit AXI4 master out (-> shell -> S_AXI_LPD -> OCM)
+    // + doorbell irq to R5 (pl_ps_irq1). Master: AW/AR/W are outputs, ready/R/B inputs.
+    (* io_buffer_type = "none" *) output logic[0:0]                            m_axi_ocm_awid,
+    (* io_buffer_type = "none" *) output logic[63:0]                           m_axi_ocm_awaddr,
+    (* io_buffer_type = "none" *) output logic[7:0]                            m_axi_ocm_awlen,
+    (* io_buffer_type = "none" *) output logic[2:0]                            m_axi_ocm_awsize,
+    (* io_buffer_type = "none" *) output logic[1:0]                            m_axi_ocm_awburst,
+    (* io_buffer_type = "none" *) output logic[0:0]                            m_axi_ocm_awlock,
+    (* io_buffer_type = "none" *) output logic[3:0]                            m_axi_ocm_awcache,
+    (* io_buffer_type = "none" *) output logic[2:0]                            m_axi_ocm_awprot,
+    (* io_buffer_type = "none" *) output logic[3:0]                            m_axi_ocm_awqos,
+    (* io_buffer_type = "none" *) output logic[3:0]                            m_axi_ocm_awregion,
+    (* io_buffer_type = "none" *) output logic                                 m_axi_ocm_awvalid,
+    (* io_buffer_type = "none" *) input  logic                                 m_axi_ocm_awready,
+    (* io_buffer_type = "none" *) output logic[31:0]                           m_axi_ocm_wdata,
+    (* io_buffer_type = "none" *) output logic[3:0]                            m_axi_ocm_wstrb,
+    (* io_buffer_type = "none" *) output logic                                 m_axi_ocm_wlast,
+    (* io_buffer_type = "none" *) output logic                                 m_axi_ocm_wvalid,
+    (* io_buffer_type = "none" *) input  logic                                 m_axi_ocm_wready,
+    (* io_buffer_type = "none" *) input  logic[0:0]                            m_axi_ocm_bid,
+    (* io_buffer_type = "none" *) input  logic[1:0]                            m_axi_ocm_bresp,
+    (* io_buffer_type = "none" *) input  logic                                 m_axi_ocm_bvalid,
+    (* io_buffer_type = "none" *) output logic                                 m_axi_ocm_bready,
+    (* io_buffer_type = "none" *) output logic[0:0]                            m_axi_ocm_arid,
+    (* io_buffer_type = "none" *) output logic[63:0]                           m_axi_ocm_araddr,
+    (* io_buffer_type = "none" *) output logic[7:0]                            m_axi_ocm_arlen,
+    (* io_buffer_type = "none" *) output logic[2:0]                            m_axi_ocm_arsize,
+    (* io_buffer_type = "none" *) output logic[1:0]                            m_axi_ocm_arburst,
+    (* io_buffer_type = "none" *) output logic[0:0]                            m_axi_ocm_arlock,
+    (* io_buffer_type = "none" *) output logic[3:0]                            m_axi_ocm_arcache,
+    (* io_buffer_type = "none" *) output logic[2:0]                            m_axi_ocm_arprot,
+    (* io_buffer_type = "none" *) output logic[3:0]                            m_axi_ocm_arqos,
+    (* io_buffer_type = "none" *) output logic[3:0]                            m_axi_ocm_arregion,
+    (* io_buffer_type = "none" *) output logic                                 m_axi_ocm_arvalid,
+    (* io_buffer_type = "none" *) input  logic                                 m_axi_ocm_arready,
+    (* io_buffer_type = "none" *) input  logic[0:0]                            m_axi_ocm_rid,
+    (* io_buffer_type = "none" *) input  logic[31:0]                           m_axi_ocm_rdata,
+    (* io_buffer_type = "none" *) input  logic[1:0]                            m_axi_ocm_rresp,
+    (* io_buffer_type = "none" *) input  logic                                 m_axi_ocm_rlast,
+    (* io_buffer_type = "none" *) input  logic                                 m_axi_ocm_rvalid,
+    (* io_buffer_type = "none" *) output logic                                 m_axi_ocm_rready,
+    (* io_buffer_type = "none" *) output logic                                 ocm_irq,
+{% endif %}
+
     // Clock and reset
     (* io_buffer_type = "none" *) input  logic                                aclk,
     (* io_buffer_type = "none" *) input  logic[0:0]                           aresetn
@@ -352,6 +397,52 @@ module design_user_wrapper_{{ c_reg }} (
     assign axi_ctrl_rresp                       = axi_ctrl_user.rresp;
     assign axi_ctrl_rvalid                      = axi_ctrl_user.rvalid;
     assign axi_ctrl_wready                      = axi_ctrl_user.wready;
+
+{% if cnfg.en_amc and c_reg == 0 %}
+    // OCM mailbox master: bundle flat ports <-> interface (vFPGA is master)
+    AXI4 #(.AXI4_DATA_BITS(32), .AXI4_ADDR_BITS(64), .AXI4_ID_BITS(1)) m_axi_ocm_user(.*);
+    // master-driven (interface -> flat outputs)
+    assign m_axi_ocm_awid       = m_axi_ocm_user.awid;
+    assign m_axi_ocm_awaddr     = m_axi_ocm_user.awaddr;
+    assign m_axi_ocm_awlen      = m_axi_ocm_user.awlen;
+    assign m_axi_ocm_awsize     = m_axi_ocm_user.awsize;
+    assign m_axi_ocm_awburst    = m_axi_ocm_user.awburst;
+    assign m_axi_ocm_awlock     = m_axi_ocm_user.awlock;
+    assign m_axi_ocm_awcache    = m_axi_ocm_user.awcache;
+    assign m_axi_ocm_awprot     = m_axi_ocm_user.awprot;
+    assign m_axi_ocm_awqos      = m_axi_ocm_user.awqos;
+    assign m_axi_ocm_awregion   = m_axi_ocm_user.awregion;
+    assign m_axi_ocm_awvalid    = m_axi_ocm_user.awvalid;
+    assign m_axi_ocm_wdata      = m_axi_ocm_user.wdata;
+    assign m_axi_ocm_wstrb      = m_axi_ocm_user.wstrb;
+    assign m_axi_ocm_wlast      = m_axi_ocm_user.wlast;
+    assign m_axi_ocm_wvalid     = m_axi_ocm_user.wvalid;
+    assign m_axi_ocm_bready     = m_axi_ocm_user.bready;
+    assign m_axi_ocm_arid       = m_axi_ocm_user.arid;
+    assign m_axi_ocm_araddr     = m_axi_ocm_user.araddr;
+    assign m_axi_ocm_arlen      = m_axi_ocm_user.arlen;
+    assign m_axi_ocm_arsize     = m_axi_ocm_user.arsize;
+    assign m_axi_ocm_arburst    = m_axi_ocm_user.arburst;
+    assign m_axi_ocm_arlock     = m_axi_ocm_user.arlock;
+    assign m_axi_ocm_arcache    = m_axi_ocm_user.arcache;
+    assign m_axi_ocm_arprot     = m_axi_ocm_user.arprot;
+    assign m_axi_ocm_arqos      = m_axi_ocm_user.arqos;
+    assign m_axi_ocm_arregion   = m_axi_ocm_user.arregion;
+    assign m_axi_ocm_arvalid    = m_axi_ocm_user.arvalid;
+    assign m_axi_ocm_rready     = m_axi_ocm_user.rready;
+    // slave-driven (flat inputs -> interface)
+    assign m_axi_ocm_user.awready = m_axi_ocm_awready;
+    assign m_axi_ocm_user.wready  = m_axi_ocm_wready;
+    assign m_axi_ocm_user.bid     = m_axi_ocm_bid;
+    assign m_axi_ocm_user.bresp   = m_axi_ocm_bresp;
+    assign m_axi_ocm_user.bvalid  = m_axi_ocm_bvalid;
+    assign m_axi_ocm_user.arready = m_axi_ocm_arready;
+    assign m_axi_ocm_user.rid     = m_axi_ocm_rid;
+    assign m_axi_ocm_user.rdata   = m_axi_ocm_rdata;
+    assign m_axi_ocm_user.rresp   = m_axi_ocm_rresp;
+    assign m_axi_ocm_user.rlast   = m_axi_ocm_rlast;
+    assign m_axi_ocm_user.rvalid  = m_axi_ocm_rvalid;
+{% endif %}
 
     // Notify
     metaIntf #(.STYPE(irq_not_t)) notify (.*);
@@ -1254,6 +1345,10 @@ module design_user_wrapper_{{ c_reg }} (
         .braid_tx_rstn(braid_tx_rstn),
         .braid_rx_rstn(braid_rx_rstn),
         .braid_loopback_sel(braid_loopback_sel),
+    {% endif %}
+    {% if cnfg.en_amc and c_reg == 0 %}
+        .m_axi_ocm(m_axi_ocm_user),
+        .ocm_irq(ocm_irq),
     {% endif %}
         .aclk(aclk),
 	    .aresetn(aresetn)
