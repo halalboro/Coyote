@@ -320,6 +320,9 @@ module cyt_top (
 
     // AXI Interfaces: config, data & command
     AXI4 axi_main_st2sh ();
+{% if cnfg.en_v80_r5_provider %}
+    AXI4L #(.AXI4L_DATA_BITS(32), .AXI4L_ADDR_BITS(32)) axi_r5_provider_st2sh ();
+{% endif %}
 
 {% if cnfg.en_amc %}
     // Example 15 — vFPGA <-> R5 OCM channel. Reverse of axi_main: the SHELL is
@@ -421,6 +424,9 @@ module cyt_top (
 
         // AXI Interfaces: config, data & command
         .m_axi_main(axi_main_st2sh),
+{% if cnfg.en_v80_r5_provider %}
+        .m_axi_r5_provider(axi_r5_provider_st2sh),
+{% endif %}
 
         .m_axis_dyn_out(axis_dyn_st2sh),
         .s_axis_dyn_in(axis_dyn_sh2st),
@@ -536,6 +542,27 @@ module cyt_top (
         .s_axi_main_bresp(axi_main_st2sh.bresp),
         .s_axi_main_bready(axi_main_st2sh.bready),
         .s_axi_main_bvalid(axi_main_st2sh.bvalid),
+{% if cnfg.en_v80_r5_provider %}
+        .s_axi_r5_provider_araddr(axi_r5_provider_st2sh.araddr),
+        .s_axi_r5_provider_arprot(axi_r5_provider_st2sh.arprot),
+        .s_axi_r5_provider_arready(axi_r5_provider_st2sh.arready),
+        .s_axi_r5_provider_arvalid(axi_r5_provider_st2sh.arvalid),
+        .s_axi_r5_provider_awaddr(axi_r5_provider_st2sh.awaddr),
+        .s_axi_r5_provider_awprot(axi_r5_provider_st2sh.awprot),
+        .s_axi_r5_provider_awready(axi_r5_provider_st2sh.awready),
+        .s_axi_r5_provider_awvalid(axi_r5_provider_st2sh.awvalid),
+        .s_axi_r5_provider_bready(axi_r5_provider_st2sh.bready),
+        .s_axi_r5_provider_bresp(axi_r5_provider_st2sh.bresp),
+        .s_axi_r5_provider_bvalid(axi_r5_provider_st2sh.bvalid),
+        .s_axi_r5_provider_rdata(axi_r5_provider_st2sh.rdata),
+        .s_axi_r5_provider_rready(axi_r5_provider_st2sh.rready),
+        .s_axi_r5_provider_rresp(axi_r5_provider_st2sh.rresp),
+        .s_axi_r5_provider_rvalid(axi_r5_provider_st2sh.rvalid),
+        .s_axi_r5_provider_wdata(axi_r5_provider_st2sh.wdata),
+        .s_axi_r5_provider_wready(axi_r5_provider_st2sh.wready),
+        .s_axi_r5_provider_wstrb(axi_r5_provider_st2sh.wstrb),
+        .s_axi_r5_provider_wvalid(axi_r5_provider_st2sh.wvalid),
+{% endif %}
     
     {% for i in range(0, cnfg.n_schan) %}
         .s_axis_dyn_in_{{ i }}_tvalid (axis_dyn_st2sh[{{ i }}].tvalid),

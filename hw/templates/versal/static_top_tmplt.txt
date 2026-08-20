@@ -42,6 +42,11 @@ module static_top (
     // AXI control interface
     AXI4.m                                  m_axi_main,
 
+{% if cnfg.en_v80_r5_provider %}
+    // Clock-converted R5 provider control path
+    AXI4L.m                                 m_axi_r5_provider,
+{% endif %}
+
     // AXI debug hub control
     AXI4.m                                  m_axi_debug_hub,
 
@@ -266,6 +271,29 @@ module static_top (
         .axi_cnfg_wready(axi_cnfg_int.wready),
         .axi_cnfg_wstrb(axi_cnfg_int.wstrb),
         .axi_cnfg_wvalid(axi_cnfg_int.wvalid),
+
+{% if cnfg.en_v80_r5_provider %}
+        // R5 provider polling aperture
+        .r5_provider_araddr(m_axi_r5_provider.araddr),
+        .r5_provider_arprot(m_axi_r5_provider.arprot),
+        .r5_provider_arready(m_axi_r5_provider.arready),
+        .r5_provider_arvalid(m_axi_r5_provider.arvalid),
+        .r5_provider_awaddr(m_axi_r5_provider.awaddr),
+        .r5_provider_awprot(m_axi_r5_provider.awprot),
+        .r5_provider_awready(m_axi_r5_provider.awready),
+        .r5_provider_awvalid(m_axi_r5_provider.awvalid),
+        .r5_provider_bready(m_axi_r5_provider.bready),
+        .r5_provider_bresp(m_axi_r5_provider.bresp),
+        .r5_provider_bvalid(m_axi_r5_provider.bvalid),
+        .r5_provider_rdata(m_axi_r5_provider.rdata),
+        .r5_provider_rready(m_axi_r5_provider.rready),
+        .r5_provider_rresp(m_axi_r5_provider.rresp),
+        .r5_provider_rvalid(m_axi_r5_provider.rvalid),
+        .r5_provider_wdata(m_axi_r5_provider.wdata),
+        .r5_provider_wready(m_axi_r5_provider.wready),
+        .r5_provider_wstrb(m_axi_r5_provider.wstrb),
+        .r5_provider_wvalid(m_axi_r5_provider.wvalid),
+{% endif %}
 
         // Shell configuration & control
         .axi_main_araddr(lsb_araddr), 

@@ -1,0 +1,89 @@
+######################################################################################
+# This file is part of Coyote <https://github.com/fpgasystems/Coyote>.
+# SPDX-License-Identifier: MIT
+######################################################################################
+
+if {[catch {
+    source "${CMAKE_BINARY_DIR}/base.tcl"
+
+    proc require_equal {label actual expected} {
+        if {$actual ne $expected} {
+            error "$label is '$actual', expected '$expected'"
+        }
+    }
+
+    if {$cfg(en_v80_r5_provider) ne 1 || $cfg(fdev) ne "v80"} {
+        error "R5 provider project check requires an enabled V80 provider build"
+    }
+    if {$cfg(build_static) ne 1 && $cfg(build_shell) ne 1} {
+        error "R5 provider project check requires a static or shell build"
+    }
+
+    set project_dir "$build_dir/$project\_shell"
+    open_project "$project_dir/$project.xpr"
+
+    set converter_file [get_files -quiet "*/axil_clock_converter_32.bd"]
+    if {[llength $converter_file] ne 1} {
+        error "expected exactly one 32-bit provider clock-converter block design"
+    }
+    open_bd_design $converter_file
+    validate_bd_design
+
+    foreach interface {s_axi m_axi} {
+        require_equal "$interface address width" \
+            [get_property CONFIG.ADDR_WIDTH [get_bd_intf_ports $interface]] 32
+        require_equal "$interface data width" \
+            [get_property CONFIG.DATA_WIDTH [get_bd_intf_ports $interface]] 32
+        require_equal "$interface protocol" \
+            [get_property CONFIG.PROTOCOL [get_bd_intf_ports $interface]] AXI4LITE
+    }
+    require_equal "provider converter clock count" \
+        [get_property CONFIG.NUM_CLKS [get_bd_cells smartconnect_0]] 2
+    require_equal "provider converter source frequency" \
+        [get_property CONFIG.FREQ_HZ [get_bd_ports s_axi_aclk]] \
+        [expr {$cfg(sclk_f) * 1000000}]
+    require_equal "provider converter destination frequency" \
+        [get_property CONFIG.FREQ_HZ [get_bd_ports m_axi_aclk]] \
+        [expr {$cfg(aclk_f) * 1000000}]
+
+    set provider_segments [get_bd_addr_segs -quiet -of_objects \
+        [get_bd_addr_spaces s_axi] -filter {NAME =~ "*m_axi_Reg"}]
+    if {[llength $provider_segments] ne 1} {
+        error "expected exactly one provider converter address segment"
+    }
+    require_equal "provider converter offset" \
+        [get_property OFFSET $provider_segments] 0x00000000
+    set provider_range [string map {_ ""} \
+        [string tolower [get_property RANGE $provider_segments]]]
+    if {$provider_range eq "4g"} {
+        set provider_range_value 0x100000000
+    } elseif {[scan $provider_range %x provider_range_value] ne 1} {
+        error "provider converter range '$provider_range' is not numeric"
+    }
+    if {$provider_range_value != 0x100000000} {
+        error "provider converter range is '$provider_range', expected 4 GiB"
+    }
+
+    set_property top shell_top [current_fileset]
+    update_compile_order -fileset sources_1
+    foreach module_file {
+        r5_coprocessor_provider_stack.sv
+        r5_packet_queue_provider.sv
+        coprocessor_port_gateway.sv
+        coprocessor_control_target.sv
+        r5_provider_axil_ccross.sv
+    } {
+        if {[llength [get_files -quiet "*/$module_file"]] ne 1} {
+            error "missing provider source '$module_file' from shell project"
+        }
+    }
+
+    puts "V80_R5_PROVIDER_PROJECT_PASS"
+    close_project
+} errorstring]} {
+    puts "[color $clr_error "** CERR: $errorstring"]"
+    puts "[color $clr_error "**"]"
+    exit 1
+}
+
+exit 0

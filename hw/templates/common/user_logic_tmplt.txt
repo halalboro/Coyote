@@ -60,6 +60,14 @@ module design_user_logic_c{{ c_cnfg }}_{{ c_reg }} (
     AXI4SR.m                    axis_host_send [N_STRM_AXI],
 
 {% endif %}
+{% if cnfg.n_coprocessor_ports > 0 %}
+    // PROCESSOR-NEUTRAL LOGICAL CO-PROCESSOR PORTS
+    AXI4SR.s                    axis_coprocessor_recv [N_COPROCESSOR_PORTS],
+    AXI4SR.m                    axis_coprocessor_send [N_COPROCESSOR_PORTS],
+    AXI4L.s                     s_axi_coprocessor_mmio [N_COPROCESSOR_PORTS],
+    input coprocessor_port_status_t coprocessor_status [N_COPROCESSOR_PORTS],
+
+{% endif %}
 {% if cnfg.en_mem %}
     // CARD DATA STREAMS
     AXI4SR.s                    axis_card_recv [N_CARD_AXI],
@@ -145,6 +153,13 @@ module design_user_logic_c{{ c_cnfg }}_{{ c_reg }} (
 {% for i in range(0, cnfg.n_strm_axi) %}
 //always_comb axis_host_recv[{{i}}].tie_off_s();
 //always_comb axis_host_send[{{i}}].tie_off_m();
+{% endfor %}
+{% endif %}
+{% if cnfg.n_coprocessor_ports > 0 %}
+{% for i in range(0, cnfg.n_coprocessor_ports) %}
+//always_comb axis_coprocessor_recv[{{i}}].tie_off_s();
+//always_comb axis_coprocessor_send[{{i}}].tie_off_m();
+//always_comb s_axi_coprocessor_mmio[{{i}}].tie_off_s();
 {% endfor %}
 {% endif %}
 {% if cnfg.en_mem %}

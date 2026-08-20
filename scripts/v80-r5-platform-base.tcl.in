@@ -1,0 +1,7 @@
+# V80 R5-0 static hardware-platform configuration.
+set platform_dir                    "$build_dir/platform"
+set cfg(en_v80_r5_platform)         ${EN_V80_R5_PLATFORM}
+set cfg(v80_r5_lpd_data_bits)       ${V80_R5_LPD_DATA_BITS}
+set cfg(v80_r5_lpd_clock_hz)        ${V80_R5_LPD_CLOCK_HZ}
+set cfg(v80_r5_scratch_base)        ${V80_R5_SCRATCH_BASE}
+set cfg(v80_r5_scratch_bytes)       ${V80_R5_SCRATCH_BYTES}

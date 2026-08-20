@@ -149,6 +149,29 @@ module shell_top (
     (* io_buffer_type = "none" *) input  logic                              s_axi_main_bready,
     (* io_buffer_type = "none" *) output logic                              s_axi_main_bvalid,
 
+{% if cnfg.en_v80_r5_provider %}
+    // R5 provider polling path from the persistent static layer
+    (* io_buffer_type = "none" *) input  logic[31:0]                        s_axi_r5_provider_araddr,
+    (* io_buffer_type = "none" *) input  logic[2:0]                         s_axi_r5_provider_arprot,
+    (* io_buffer_type = "none" *) output logic                              s_axi_r5_provider_arready,
+    (* io_buffer_type = "none" *) input  logic                              s_axi_r5_provider_arvalid,
+    (* io_buffer_type = "none" *) input  logic[31:0]                        s_axi_r5_provider_awaddr,
+    (* io_buffer_type = "none" *) input  logic[2:0]                         s_axi_r5_provider_awprot,
+    (* io_buffer_type = "none" *) output logic                              s_axi_r5_provider_awready,
+    (* io_buffer_type = "none" *) input  logic                              s_axi_r5_provider_awvalid,
+    (* io_buffer_type = "none" *) input  logic                              s_axi_r5_provider_bready,
+    (* io_buffer_type = "none" *) output logic[1:0]                         s_axi_r5_provider_bresp,
+    (* io_buffer_type = "none" *) output logic                              s_axi_r5_provider_bvalid,
+    (* io_buffer_type = "none" *) output logic[31:0]                        s_axi_r5_provider_rdata,
+    (* io_buffer_type = "none" *) input  logic                              s_axi_r5_provider_rready,
+    (* io_buffer_type = "none" *) output logic[1:0]                         s_axi_r5_provider_rresp,
+    (* io_buffer_type = "none" *) output logic                              s_axi_r5_provider_rvalid,
+    (* io_buffer_type = "none" *) input  logic[31:0]                        s_axi_r5_provider_wdata,
+    (* io_buffer_type = "none" *) output logic                              s_axi_r5_provider_wready,
+    (* io_buffer_type = "none" *) input  logic[3:0]                         s_axi_r5_provider_wstrb,
+    (* io_buffer_type = "none" *) input  logic                              s_axi_r5_provider_wvalid,
+{% endif %}
+
     // AXIS
     {% for i in range(0, cnfg.n_schan) %}
     (* io_buffer_type = "none" *) input  logic[AXI_DATA_BITS-1:0]           s_axis_dyn_in_{{ i }}_tdata,
@@ -530,6 +553,39 @@ module shell_top (
     AXI4 s_axi_main();
     `AXI_ASSIGN_S2I(s_axi_main, s_axi_main)    
     AXI4L axi_cnfg ();
+{% if cnfg.en_v80_r5_provider %}
+    AXI4L #(.AXI4L_DATA_BITS(32), .AXI4L_ADDR_BITS(32)) axi_r5_provider_xclk ();
+    AXI4L #(.AXI4L_DATA_BITS(32), .AXI4L_ADDR_BITS(32)) axi_r5_provider ();
+    assign axi_r5_provider_xclk.araddr = s_axi_r5_provider_araddr;
+    assign axi_r5_provider_xclk.arprot = s_axi_r5_provider_arprot;
+    assign axi_r5_provider_xclk.arvalid = s_axi_r5_provider_arvalid;
+    assign s_axi_r5_provider_arready = axi_r5_provider_xclk.arready;
+    assign axi_r5_provider_xclk.awaddr = s_axi_r5_provider_awaddr;
+    assign axi_r5_provider_xclk.awprot = s_axi_r5_provider_awprot;
+    assign axi_r5_provider_xclk.awvalid = s_axi_r5_provider_awvalid;
+    assign s_axi_r5_provider_awready = axi_r5_provider_xclk.awready;
+    assign axi_r5_provider_xclk.wdata = s_axi_r5_provider_wdata;
+    assign axi_r5_provider_xclk.wstrb = s_axi_r5_provider_wstrb;
+    assign axi_r5_provider_xclk.wvalid = s_axi_r5_provider_wvalid;
+    assign s_axi_r5_provider_wready = axi_r5_provider_xclk.wready;
+    assign s_axi_r5_provider_bresp = axi_r5_provider_xclk.bresp;
+    assign s_axi_r5_provider_bvalid = axi_r5_provider_xclk.bvalid;
+    assign axi_r5_provider_xclk.bready = s_axi_r5_provider_bready;
+    assign s_axi_r5_provider_rdata = axi_r5_provider_xclk.rdata;
+    assign s_axi_r5_provider_rresp = axi_r5_provider_xclk.rresp;
+    assign s_axi_r5_provider_rvalid = axi_r5_provider_xclk.rvalid;
+    assign axi_r5_provider_xclk.rready = s_axi_r5_provider_rready;
+
+    r5_provider_axil_ccross inst_r5_provider_ccross (
+        .s_aclk(xclk), .s_aresetn(xresetn),
+        .m_aclk(aclk), .m_aresetn(aresetn),
+        .s_axi(axi_r5_provider_xclk), .m_axi(axi_r5_provider)
+    );
+{% endif %}
+{% if cnfg.en_v80_r5_provider %}
+    AXI4L axi_cnfg_shell ();
+    AXI4L axi_coprocessor_ctrl ();
+{% endif %}
     AXI4L axi_ctrl [N_REGIONS] ();
     AXI4 #(.AXI4_DATA_BITS(AVX_DATA_BITS)) axim_ctrl [N_REGIONS] ();
     
@@ -920,6 +976,15 @@ module shell_top (
 {% endif %}
 {% endif %}
 
+{% if cnfg.en_v80_r5_provider %}
+    axil_address_splitter #(
+        .SHELL_BYTES(1024), .SERVICE_BASE(8192), .SERVICE_BYTES(4096)
+    ) inst_shell_control_splitter (
+        .aclk(aclk), .aresetn(aresetn), .s_axi(axi_cnfg),
+        .m_axi_shell(axi_cnfg_shell), .m_axi_service(axi_coprocessor_ctrl)
+    );
+{% endif %}
+
     shell_slave inst_shell_slave (
         .aclk(aclk),
         .aresetn(aresetn),
@@ -945,7 +1010,11 @@ module shell_top (
   {% endif %}
 {% endif %}
         .m_decouple(decouple),
+{% if cnfg.en_v80_r5_provider %}
+        .s_axi_ctrl(axi_cnfg_shell)
+{% else %}
         .s_axi_ctrl(axi_cnfg)
+{% endif %}
     );
 
 {% if cnfg.en_net %}
@@ -1853,6 +1922,10 @@ module shell_top (
 
     design_dynamic_top inst_dynamic (
         .s_axi_ctrl(axi_ctrl[0+:{{ cnfg.n_reg }}]),
+{% if cnfg.en_v80_r5_provider %}
+        .s_axi_r5_provider(axi_r5_provider),
+        .s_axi_coprocessor_ctrl(axi_coprocessor_ctrl),
+{% endif %}
 {% if cnfg.en_avx %}
         .s_axim_ctrl(axim_ctrl[0+:{{ cnfg.n_reg }}]),
 {% endif %}

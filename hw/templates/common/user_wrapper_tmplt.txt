@@ -97,6 +97,49 @@ module design_user_wrapper_{{ c_reg }} (
     (* io_buffer_type = "none" *) output logic                                axis_host_src_tvalid,
 {% endif %}
 
+{% if cnfg.n_coprocessor_ports > 0 %}
+    {% for i in range(0, cnfg.n_coprocessor_ports) %}
+    // LOGICAL CO-PROCESSOR PORT {{i}}: provider to application stream
+    (* io_buffer_type = "none" *) input  logic[COPROCESSOR_STREAM_DATA_BITS-1:0] coprocessor_{{i}}_recv_tdata,
+    (* io_buffer_type = "none" *) input  logic[COPROCESSOR_STREAM_DATA_BITS/8-1:0] coprocessor_{{i}}_recv_tkeep,
+    (* io_buffer_type = "none" *) input  logic[COPROCESSOR_STREAM_ID_BITS-1:0] coprocessor_{{i}}_recv_tid,
+    (* io_buffer_type = "none" *) input  logic coprocessor_{{i}}_recv_tlast,
+    (* io_buffer_type = "none" *) output logic coprocessor_{{i}}_recv_tready,
+    (* io_buffer_type = "none" *) input  logic coprocessor_{{i}}_recv_tvalid,
+
+    // LOGICAL CO-PROCESSOR PORT {{i}}: application to provider stream
+    (* io_buffer_type = "none" *) output logic[COPROCESSOR_STREAM_DATA_BITS-1:0] coprocessor_{{i}}_send_tdata,
+    (* io_buffer_type = "none" *) output logic[COPROCESSOR_STREAM_DATA_BITS/8-1:0] coprocessor_{{i}}_send_tkeep,
+    (* io_buffer_type = "none" *) output logic[COPROCESSOR_STREAM_ID_BITS-1:0] coprocessor_{{i}}_send_tid,
+    (* io_buffer_type = "none" *) output logic coprocessor_{{i}}_send_tlast,
+    (* io_buffer_type = "none" *) input  logic coprocessor_{{i}}_send_tready,
+    (* io_buffer_type = "none" *) output logic coprocessor_{{i}}_send_tvalid,
+
+    // Selected-provider AXI4-Lite master to application slave
+    (* io_buffer_type = "none" *) input  logic[COPROCESSOR_MMIO_ADDR_BITS-1:0] coprocessor_{{i}}_mmio_araddr,
+    (* io_buffer_type = "none" *) input  logic[2:0] coprocessor_{{i}}_mmio_arprot,
+    (* io_buffer_type = "none" *) output logic coprocessor_{{i}}_mmio_arready,
+    (* io_buffer_type = "none" *) input  logic coprocessor_{{i}}_mmio_arvalid,
+    (* io_buffer_type = "none" *) input  logic[COPROCESSOR_MMIO_ADDR_BITS-1:0] coprocessor_{{i}}_mmio_awaddr,
+    (* io_buffer_type = "none" *) input  logic[2:0] coprocessor_{{i}}_mmio_awprot,
+    (* io_buffer_type = "none" *) output logic coprocessor_{{i}}_mmio_awready,
+    (* io_buffer_type = "none" *) input  logic coprocessor_{{i}}_mmio_awvalid,
+    (* io_buffer_type = "none" *) input  logic coprocessor_{{i}}_mmio_bready,
+    (* io_buffer_type = "none" *) output logic[1:0] coprocessor_{{i}}_mmio_bresp,
+    (* io_buffer_type = "none" *) output logic coprocessor_{{i}}_mmio_bvalid,
+    (* io_buffer_type = "none" *) output logic[COPROCESSOR_MMIO_DATA_BITS-1:0] coprocessor_{{i}}_mmio_rdata,
+    (* io_buffer_type = "none" *) input  logic coprocessor_{{i}}_mmio_rready,
+    (* io_buffer_type = "none" *) output logic[1:0] coprocessor_{{i}}_mmio_rresp,
+    (* io_buffer_type = "none" *) output logic coprocessor_{{i}}_mmio_rvalid,
+    (* io_buffer_type = "none" *) input  logic[COPROCESSOR_MMIO_DATA_BITS-1:0] coprocessor_{{i}}_mmio_wdata,
+    (* io_buffer_type = "none" *) output logic coprocessor_{{i}}_mmio_wready,
+    (* io_buffer_type = "none" *) input  logic[COPROCESSOR_MMIO_DATA_BITS/8-1:0] coprocessor_{{i}}_mmio_wstrb,
+    (* io_buffer_type = "none" *) input  logic coprocessor_{{i}}_mmio_wvalid,
+
+    (* io_buffer_type = "none" *) input coprocessor_port_status_t coprocessor_{{i}}_status,
+    {% endfor %}
+{% endif %}
+
 {% if cnfg.en_mem %}
     {% for i in range(0, cnfg.n_card_axi) %}
     // AXI4S CARD SINK
@@ -553,6 +596,63 @@ module design_user_wrapper_{{ c_reg }} (
     assign axis_host_src_tkeep                  = axis_host_src.tkeep;
     assign axis_host_src_tlast                  = axis_host_src.tlast;
     assign axis_host_src.tready                 = axis_host_src_tready;
+{% endif %}
+
+{% if cnfg.n_coprocessor_ports > 0 %}
+    AXI4SR #(
+        .AXI4S_DATA_BITS(COPROCESSOR_STREAM_DATA_BITS),
+        .AXI4S_ID_BITS(COPROCESSOR_STREAM_ID_BITS)
+    ) axis_coprocessor_recv [N_COPROCESSOR_PORTS] (.*);
+    AXI4SR #(
+        .AXI4S_DATA_BITS(COPROCESSOR_STREAM_DATA_BITS),
+        .AXI4S_ID_BITS(COPROCESSOR_STREAM_ID_BITS)
+    ) axis_coprocessor_send [N_COPROCESSOR_PORTS] (.*);
+    AXI4L #(
+        .AXI4L_ADDR_BITS(COPROCESSOR_MMIO_ADDR_BITS),
+        .AXI4L_DATA_BITS(COPROCESSOR_MMIO_DATA_BITS)
+    ) s_axi_coprocessor_mmio [N_COPROCESSOR_PORTS] (.*);
+    coprocessor_port_status_t coprocessor_status [N_COPROCESSOR_PORTS];
+
+{% for i in range(0, cnfg.n_coprocessor_ports) %}
+    assign axis_coprocessor_recv[{{i}}].tdata = coprocessor_{{i}}_recv_tdata;
+    assign axis_coprocessor_recv[{{i}}].tkeep = coprocessor_{{i}}_recv_tkeep;
+    assign axis_coprocessor_recv[{{i}}].tid = coprocessor_{{i}}_recv_tid;
+    assign axis_coprocessor_recv[{{i}}].tlast = coprocessor_{{i}}_recv_tlast;
+    assign axis_coprocessor_recv[{{i}}].tvalid = coprocessor_{{i}}_recv_tvalid;
+    assign coprocessor_{{i}}_recv_tready = axis_coprocessor_recv[{{i}}].tready;
+
+    assign coprocessor_{{i}}_send_tdata = axis_coprocessor_send[{{i}}].tdata;
+    assign coprocessor_{{i}}_send_tkeep = axis_coprocessor_send[{{i}}].tkeep;
+    assign coprocessor_{{i}}_send_tid = axis_coprocessor_send[{{i}}].tid;
+    assign coprocessor_{{i}}_send_tlast = axis_coprocessor_send[{{i}}].tlast;
+    assign coprocessor_{{i}}_send_tvalid = axis_coprocessor_send[{{i}}].tvalid;
+    assign axis_coprocessor_send[{{i}}].tready = coprocessor_{{i}}_send_tready;
+
+    assign s_axi_coprocessor_mmio[{{i}}].araddr = coprocessor_{{i}}_mmio_araddr;
+    assign s_axi_coprocessor_mmio[{{i}}].arprot = coprocessor_{{i}}_mmio_arprot;
+    assign s_axi_coprocessor_mmio[{{i}}].arqos = '0;
+    assign s_axi_coprocessor_mmio[{{i}}].arregion = '0;
+    assign s_axi_coprocessor_mmio[{{i}}].arvalid = coprocessor_{{i}}_mmio_arvalid;
+    assign coprocessor_{{i}}_mmio_arready = s_axi_coprocessor_mmio[{{i}}].arready;
+    assign s_axi_coprocessor_mmio[{{i}}].awaddr = coprocessor_{{i}}_mmio_awaddr;
+    assign s_axi_coprocessor_mmio[{{i}}].awprot = coprocessor_{{i}}_mmio_awprot;
+    assign s_axi_coprocessor_mmio[{{i}}].awqos = '0;
+    assign s_axi_coprocessor_mmio[{{i}}].awregion = '0;
+    assign s_axi_coprocessor_mmio[{{i}}].awvalid = coprocessor_{{i}}_mmio_awvalid;
+    assign coprocessor_{{i}}_mmio_awready = s_axi_coprocessor_mmio[{{i}}].awready;
+    assign s_axi_coprocessor_mmio[{{i}}].wdata = coprocessor_{{i}}_mmio_wdata;
+    assign s_axi_coprocessor_mmio[{{i}}].wstrb = coprocessor_{{i}}_mmio_wstrb;
+    assign s_axi_coprocessor_mmio[{{i}}].wvalid = coprocessor_{{i}}_mmio_wvalid;
+    assign coprocessor_{{i}}_mmio_wready = s_axi_coprocessor_mmio[{{i}}].wready;
+    assign s_axi_coprocessor_mmio[{{i}}].bready = coprocessor_{{i}}_mmio_bready;
+    assign coprocessor_{{i}}_mmio_bresp = s_axi_coprocessor_mmio[{{i}}].bresp;
+    assign coprocessor_{{i}}_mmio_bvalid = s_axi_coprocessor_mmio[{{i}}].bvalid;
+    assign s_axi_coprocessor_mmio[{{i}}].rready = coprocessor_{{i}}_mmio_rready;
+    assign coprocessor_{{i}}_mmio_rdata = s_axi_coprocessor_mmio[{{i}}].rdata;
+    assign coprocessor_{{i}}_mmio_rresp = s_axi_coprocessor_mmio[{{i}}].rresp;
+    assign coprocessor_{{i}}_mmio_rvalid = s_axi_coprocessor_mmio[{{i}}].rvalid;
+    assign coprocessor_status[{{i}}] = coprocessor_{{i}}_status;
+{% endfor %}
 {% endif %}
 
 {% if cnfg.en_mem %}
@@ -1308,6 +1408,12 @@ module design_user_wrapper_{{ c_reg }} (
     {% if cnfg.en_strm %}
         .axis_host_recv(axis_host_recv_int),
         .axis_host_send(axis_host_send_int),
+    {% endif %}
+    {% if cnfg.n_coprocessor_ports > 0 %}
+        .axis_coprocessor_recv(axis_coprocessor_recv),
+        .axis_coprocessor_send(axis_coprocessor_send),
+        .s_axi_coprocessor_mmio(s_axi_coprocessor_mmio),
+        .coprocessor_status(coprocessor_status),
     {% endif %}
     {% if cnfg.en_mem %}
         .axis_card_recv(axis_card_recv_int),

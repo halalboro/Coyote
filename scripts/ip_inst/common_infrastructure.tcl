@@ -63,9 +63,7 @@ if {$cfg(fpga_arch) eq "ultrascale_plus"} {
     set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.ADDR_WIDTH {64} CONFIG.DATA_WIDTH {64} CONFIG.ID_WIDTH {0} CONFIG.AWUSER_WIDTH {0} CONFIG.ARUSER_WIDTH {0} CONFIG.RUSER_WIDTH {0} CONFIG.WUSER_WIDTH {0} CONFIG.BUSER_WIDTH {0}] [get_ips axil_clock_converter]
 } elseif {$cfg(fpga_arch) eq "versal"} {
     # On Versal devices, a SmartConnect IP is used; however, it must be instantiated inside a BD
-    proc create_axil_clock_converter_bd_versal {bd_name addr_width data_width} {
-        upvar #0 cfg cnfg
-
+    proc create_axil_clock_converter_bd_versal {bd_name addr_width data_width s_clock_mhz m_clock_mhz} {
         create_bd_design $bd_name
         current_bd_design $bd_name
 
@@ -92,21 +90,19 @@ if {$cfg(fpga_arch) eq "ultrascale_plus"} {
         create_bd_port -dir I -type rst s_axi_aresetn
         create_bd_port -dir I -type rst m_axi_aresetn
 
-        set cmd "set s_axi_aclk \[ create_bd_port -dir I -type clk s_axi_aclk ]
-        set_property -dict \[ list \
+        set s_axi_frequency [expr {$s_clock_mhz * 1000000}]
+        set s_axi_aclk [ create_bd_port -dir I -type clk -freq_hz $s_axi_frequency s_axi_aclk ]
+        set_property -dict [ list \
             CONFIG.ASSOCIATED_BUSIF {s_axi} \
             CONFIG.ASSOCIATED_RESET {s_axi_aresetn} \
-            CONFIG.FREQ_HZ {$cnfg(aclk_f)000000} \
-        ] \$s_axi_aclk"
-        eval $cmd
+        ] $s_axi_aclk
 
-        set cmd "set m_axi_aclk \[ create_bd_port -dir I -type clk m_axi_aclk ]
-        set_property -dict \[ list \
+        set m_axi_frequency [expr {$m_clock_mhz * 1000000}]
+        set m_axi_aclk [ create_bd_port -dir I -type clk -freq_hz $m_axi_frequency m_axi_aclk ]
+        set_property -dict [ list \
             CONFIG.ASSOCIATED_BUSIF {m_axi} \
             CONFIG.ASSOCIATED_RESET {m_axi_aresetn} \
-            CONFIG.FREQ_HZ {$cnfg(uclk_f)000000} \
-        ] \$m_axi_aclk"
-        eval $cmd
+        ] $m_axi_aclk
 
         set smartconnect_cdc [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 smartconnect_0]
 
@@ -123,13 +119,17 @@ if {$cfg(fpga_arch) eq "ultrascale_plus"} {
         connect_bd_net [get_bd_ports m_axi_aclk]   [get_bd_pins $smartconnect_cdc/aclk1]
         connect_bd_net [get_bd_ports s_axi_aresetn] [get_bd_pins $smartconnect_cdc/aresetn]
 
-        assign_bd_address -offset 0x0 -range 16E -target_address_space [get_bd_addr_spaces s_axi] [get_bd_addr_segs m_axi/Reg]
+        set address_range [expr {$addr_width <= 32 ? "4G" : "16E"}]
+        assign_bd_address -offset 0x0 -range $address_range -target_address_space [get_bd_addr_spaces s_axi] [get_bd_addr_segs m_axi/Reg]
 
         validate_bd_design
         save_bd_design
     }
 
-    create_axil_clock_converter_bd_versal axil_clock_converter 64 64
+    create_axil_clock_converter_bd_versal axil_clock_converter 64 64 $cfg(aclk_f) $cfg(uclk_f)
+    if {[info exists cfg(en_v80_r5_provider)] && $cfg(en_v80_r5_provider) eq 1} {
+        create_axil_clock_converter_bd_versal axil_clock_converter_32 32 32 $cfg(sclk_f) $cfg(aclk_f)
+    }
 } else {
     puts "ERROR: Unsupported FPGA architecture: $cfg(fpga_arch)"
     exit 1

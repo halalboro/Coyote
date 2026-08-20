@@ -1,0 +1,103 @@
+######################################################################################
+# This file is part of Coyote <https://github.com/fpgasystems/Coyote>.
+# SPDX-License-Identifier: MIT
+######################################################################################
+
+if {[catch {
+    source "${CMAKE_BINARY_DIR}/base.tcl"
+
+    proc require_equal {label actual expected} {
+        if {$actual ne $expected} {
+            error "$label is '$actual', expected '$expected'"
+        }
+    }
+
+    if {$cfg(en_v80_r5_platform) ne 1 || $cfg(fdev) ne "v80" || $cfg(build_static) ne 1} {
+        error "R5 platform design check requires an enabled V80 static build"
+    }
+
+    set project_dir "$build_dir/$project\_static"
+    open_project "$project_dir/$project.xpr"
+    open_bd_design "$project_dir/$project.srcs/sources_1/bd/design_static/design_static.bd"
+    validate_bd_design
+
+    set cips [get_bd_cells versal_cips_0]
+    require_equal "PS_PMC_CONFIG_APPLIED" [get_property CONFIG.PS_PMC_CONFIG_APPLIED $cips] 1
+    set ps_pmc_config [get_property CONFIG.PS_PMC_CONFIG $cips]
+    require_equal "PS_PL_CONNECTIVITY_MODE" [dict get $ps_pmc_config PS_PL_CONNECTIVITY_MODE] Custom
+    require_equal "PS_M_AXI_LPD_DATA_WIDTH" [dict get $ps_pmc_config PS_M_AXI_LPD_DATA_WIDTH] $cfg(v80_r5_lpd_data_bits)
+    require_equal "PS_NUM_FABRIC_RESETS" [dict get $ps_pmc_config PS_NUM_FABRIC_RESETS] 1
+    require_equal "PS_USE_M_AXI_LPD" [dict get $ps_pmc_config PS_USE_M_AXI_LPD] 1
+
+    foreach cell {r5_scratch_interconnect r5_scratch_ctrl r5_scratch_mem proc_sys_reset_r5} {
+        if {[llength [get_bd_cells -quiet $cell]] ne 1} {
+            error "missing static R5 platform cell '$cell'"
+        }
+    }
+    require_equal "scratch memory size" [get_property CONFIG.MEMORY_SIZE [get_bd_cells r5_scratch_mem]] 32768
+
+    if {[llength [get_bd_intf_nets -quiet -of_objects [get_bd_intf_pins versal_cips_0/M_AXI_LPD]]] ne 1} {
+        error "M_AXI_LPD is not connected"
+    }
+    require_equal \
+        "M_AXI_LPD clock" \
+        [get_bd_nets -of_objects [get_bd_pins versal_cips_0/m_axi_lpd_aclk]] \
+        [get_bd_nets -of_objects [get_bd_pins versal_cips_0/pl0_ref_clk]]
+    if {[llength [get_bd_nets -quiet -of_objects [get_bd_pins versal_cips_0/pl0_resetn]]] ne 1} {
+        error "pl0_resetn is not connected"
+    }
+
+    set lpd_space [get_bd_addr_spaces versal_cips_0/M_AXI_LPD]
+    set scratch_segments [get_bd_addr_segs -quiet -of_objects $lpd_space -filter {NAME =~ "*SEG_r5_scratch_ctrl_Mem0"}]
+    if {[llength $scratch_segments] ne 1} {
+        error "expected exactly one R5 scratch address segment"
+    }
+    require_equal "scratch offset" [get_property OFFSET $scratch_segments] 0x80000000
+    require_equal "scratch range" [get_property RANGE $scratch_segments] 0x00001000
+
+    if {$cfg(en_v80_r5_provider) eq 1} {
+        foreach cell {r5_provider_clock_converter} {
+            if {[llength [get_bd_cells -quiet $cell]] ne 1} {
+                error "missing static R5 provider cell '$cell'"
+            }
+        }
+        if {[llength [get_bd_intf_ports -quiet r5_provider]] ne 1} {
+            error "missing exported R5 provider AXI-Lite interface"
+        }
+        require_equal "R5 interconnect outputs" \
+            [get_property CONFIG.NUM_MI [get_bd_cells r5_scratch_interconnect]] 2
+        require_equal "provider CDC clock count" \
+            [get_property CONFIG.NUM_CLKS [get_bd_cells r5_provider_clock_converter]] 2
+        set xclk_busifs [split [get_property CONFIG.ASSOCIATED_BUSIF [get_bd_ports xclk]] {:}]
+        if {[lsearch -exact $xclk_busifs r5_provider] < 0} {
+            error "R5 provider external interface is not associated with xclk"
+        }
+        require_equal "provider source clock" \
+            [get_bd_nets -of_objects [get_bd_pins r5_provider_clock_converter/aclk]] \
+            [get_bd_nets -of_objects [get_bd_pins versal_cips_0/pl0_ref_clk]]
+        require_equal "provider destination clock" \
+            [get_bd_nets -of_objects [get_bd_pins r5_provider_clock_converter/aclk1]] \
+            [get_bd_nets -of_objects [get_bd_pins clk_wiz_0/clk_out1]]
+        require_equal "provider external clock frequency" \
+            [get_property CONFIG.FREQ_HZ [get_bd_intf_ports r5_provider]] \
+            [get_property CONFIG.FREQ_HZ [get_bd_ports xclk]]
+        require_equal "provider CDC output frequency" \
+            [get_property CONFIG.FREQ_HZ [get_bd_intf_pins r5_provider_clock_converter/M00_AXI]] \
+            [get_property CONFIG.FREQ_HZ [get_bd_intf_ports r5_provider]]
+        set provider_segments [get_bd_addr_segs -quiet -of_objects $lpd_space -filter {NAME =~ "*SEG_r5_provider_Reg"}]
+        if {[llength $provider_segments] ne 1} {
+            error "expected exactly one R5 provider address segment"
+        }
+        require_equal "provider offset" [get_property OFFSET $provider_segments] 0x80010000
+        require_equal "provider range" [get_property RANGE $provider_segments] 0x00010000
+    }
+
+    puts "V80_R5_PLATFORM_DESIGN_PASS"
+    close_project
+} errorstring]} {
+    puts "[color $clr_error "** CERR: $errorstring"]"
+    puts "[color $clr_error "**"]"
+    exit 1
+}
+
+exit 0

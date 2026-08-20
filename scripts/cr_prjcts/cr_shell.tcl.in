@@ -37,6 +37,10 @@ unset ::env(PYTHONHOME)
 
 source "${CMAKE_BINARY_DIR}/base.tcl"
 
+set coprocessor_provider_sources [list ${COPROCESSOR_PROVIDER_SOURCES_TCL}]
+set coprocessor_provider_include_dirs [list ${COPROCESSOR_PROVIDER_INCLUDE_DIRS_TCL}]
+set coprocessor_provider_init_tcl [list ${COPROCESSOR_PROVIDER_INIT_TCL_TCL}]
+
 ########################################################################################################
 # CREATE PROJECT
 ########################################################################################################
@@ -95,6 +99,9 @@ add_files "$hw_dir/hdl/pkg"
 add_files "$hw_dir/hdl/shell"
 add_files "$hw_dir/hdl/mmu"
 add_files "$hw_dir/hdl/common"
+if {$cfg(n_coprocessor_ports) > 0} {
+    add_files "$hw_dir/hdl/coprocessor"
+}
 if {$cfg(en_card) eq 1} {
     add_files "$hw_dir/hdl/stripe"
     add_files "$hw_dir/hdl/cdma/cdma_u"
@@ -110,6 +117,17 @@ if {$cfg(en_net) eq 1} {
     }
 }
 add_files "$proj_dir/hdl"
+
+if {$cfg(coprocessor_provider_count) > 0} {
+    if {[llength $coprocessor_provider_sources] > 0} {
+        add_files -norecurse $coprocessor_provider_sources
+    }
+    if {[llength $coprocessor_provider_include_dirs] > 0} {
+        set_property include_dirs \
+            [concat [get_property include_dirs [current_fileset]] $coprocessor_provider_include_dirs] \
+            [current_fileset]
+    }
+}
 
 # Top level
 set_property "top" "shell_top" [current_fileset]
@@ -136,6 +154,9 @@ if {$cfg(en_card) eq 1} {
 }
 if {$cfg(en_net) eq 1} {
     source "$scripts_dir/ip_inst/network_infrastructure.tcl" -notrace
+}
+foreach provider_init $coprocessor_provider_init_tcl {
+    source $provider_init
 }
 
 ########################################################################################################

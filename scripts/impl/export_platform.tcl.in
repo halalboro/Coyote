@@ -1,0 +1,23 @@
+######################################################################################
+# This file is part of Coyote <https://github.com/fpgasystems/Coyote>.
+# SPDX-License-Identifier: MIT
+######################################################################################
+
+if {[catch {
+    source "${CMAKE_BINARY_DIR}/base.tcl"
+
+    if {$cfg(en_v80_r5_platform) ne 1 || $cfg(fdev) ne "v80" || $cfg(build_static) ne 1} {
+        error "Fixed R5 hardware-platform export requires an enabled V80 static build"
+    }
+
+    file mkdir "$platform_dir"
+    open_checkpoint "$dcp_dir/shell_routed.dcp"
+    write_hw_platform -fixed -force -file "$platform_dir/cyt_top.xsa"
+    close_project
+} errorstring]} {
+    puts "[color $clr_error "** CERR: $errorstring"]"
+    puts "[color $clr_error "**"]"
+    exit 1
+}
+
+exit 0

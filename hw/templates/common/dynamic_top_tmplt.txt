@@ -36,7 +36,11 @@ module design_dynamic_top #(
 ) (
     // AXI4 Lite control
     AXI4L.s                                     s_axi_ctrl [N_REGIONS],
-    
+{% if cnfg.en_v80_r5_provider %}
+    AXI4L.s                                     s_axi_r5_provider,
+    AXI4L.s                                     s_axi_coprocessor_ctrl,
+{% endif %}
+
 {% if cnfg.en_avx %}
     // AXI4 AVX control
     AXI4.s                                      s_axim_ctrl [N_REGIONS],
@@ -358,7 +362,7 @@ module design_dynamic_top #(
 {% endif %}
     end
 
-    // Decoupling 
+    // Decoupling
     // ----------------------------------------------------------------------
     AXI4S axis_host_in_ul [N_REGIONS] ();
     AXI4S axis_host_out_ul [N_REGIONS] ();
@@ -1176,6 +1180,127 @@ module design_dynamic_top #(
 	// ================-----------------------------------------------------------------
 	// USER 
 	// ================-----------------------------------------------------------------
+{% if cnfg.n_coprocessor_ports > 0 %}
+    AXI4SR #(
+        .AXI4S_DATA_BITS(COPROCESSOR_STREAM_DATA_BITS),
+        .AXI4S_ID_BITS(COPROCESSOR_STREAM_ID_BITS)
+    ) axis_coprocessor_recv [N_REGIONS*N_COPROCESSOR_PORTS] ();
+    AXI4SR #(
+        .AXI4S_DATA_BITS(COPROCESSOR_STREAM_DATA_BITS),
+        .AXI4S_ID_BITS(COPROCESSOR_STREAM_ID_BITS)
+    ) axis_coprocessor_send [N_REGIONS*N_COPROCESSOR_PORTS] ();
+    AXI4L #(
+        .AXI4L_ADDR_BITS(COPROCESSOR_MMIO_ADDR_BITS),
+        .AXI4L_DATA_BITS(COPROCESSOR_MMIO_DATA_BITS)
+    ) axi_coprocessor_mmio [N_REGIONS*N_COPROCESSOR_PORTS] ();
+    coprocessor_port_status_t coprocessor_status [N_REGIONS*N_COPROCESSOR_PORTS];
+
+{% if cnfg.en_v80_r5_provider %}
+    logic r5_status_bound;
+    logic r5_status_ready;
+    logic r5_status_fault;
+    logic r5_status_quiesced;
+    logic r5_status_idle;
+    logic [2:0] r5_status_state;
+    logic [15:0] r5_status_endpoint;
+    logic [31:0] r5_status_generation;
+
+    r5_coprocessor_provider_stack inst_r5_provider (
+        .aclk(aclk), .aresetn(aresetn), .application_decoupled(decouple[0]),
+        .cpu_awaddr(s_axi_r5_provider.awaddr), .cpu_awprot(s_axi_r5_provider.awprot),
+        .cpu_awvalid(s_axi_r5_provider.awvalid), .cpu_awready(s_axi_r5_provider.awready),
+        .cpu_wdata(s_axi_r5_provider.wdata), .cpu_wstrb(s_axi_r5_provider.wstrb),
+        .cpu_wvalid(s_axi_r5_provider.wvalid), .cpu_wready(s_axi_r5_provider.wready),
+        .cpu_bresp(s_axi_r5_provider.bresp), .cpu_bvalid(s_axi_r5_provider.bvalid),
+        .cpu_bready(s_axi_r5_provider.bready), .cpu_araddr(s_axi_r5_provider.araddr),
+        .cpu_arprot(s_axi_r5_provider.arprot), .cpu_arvalid(s_axi_r5_provider.arvalid),
+        .cpu_arready(s_axi_r5_provider.arready), .cpu_rdata(s_axi_r5_provider.rdata),
+        .cpu_rresp(s_axi_r5_provider.rresp), .cpu_rvalid(s_axi_r5_provider.rvalid),
+        .cpu_rready(s_axi_r5_provider.rready),
+        .control_awaddr(s_axi_coprocessor_ctrl.awaddr),
+        .control_awprot(s_axi_coprocessor_ctrl.awprot),
+        .control_awvalid(s_axi_coprocessor_ctrl.awvalid),
+        .control_awready(s_axi_coprocessor_ctrl.awready),
+        .control_wdata(s_axi_coprocessor_ctrl.wdata),
+        .control_wstrb(s_axi_coprocessor_ctrl.wstrb),
+        .control_wvalid(s_axi_coprocessor_ctrl.wvalid),
+        .control_wready(s_axi_coprocessor_ctrl.wready),
+        .control_bresp(s_axi_coprocessor_ctrl.bresp),
+        .control_bvalid(s_axi_coprocessor_ctrl.bvalid),
+        .control_bready(s_axi_coprocessor_ctrl.bready),
+        .control_araddr(s_axi_coprocessor_ctrl.araddr),
+        .control_arprot(s_axi_coprocessor_ctrl.arprot),
+        .control_arvalid(s_axi_coprocessor_ctrl.arvalid),
+        .control_arready(s_axi_coprocessor_ctrl.arready),
+        .control_rdata(s_axi_coprocessor_ctrl.rdata),
+        .control_rresp(s_axi_coprocessor_ctrl.rresp),
+        .control_rvalid(s_axi_coprocessor_ctrl.rvalid),
+        .control_rready(s_axi_coprocessor_ctrl.rready),
+        .application_send_tdata(axis_coprocessor_send[0].tdata),
+        .application_send_tkeep(axis_coprocessor_send[0].tkeep),
+        .application_send_tid(axis_coprocessor_send[0].tid),
+        .application_send_tlast(axis_coprocessor_send[0].tlast),
+        .application_send_tvalid(axis_coprocessor_send[0].tvalid),
+        .application_send_tready(axis_coprocessor_send[0].tready),
+        .application_recv_tdata(axis_coprocessor_recv[0].tdata),
+        .application_recv_tkeep(axis_coprocessor_recv[0].tkeep),
+        .application_recv_tid(axis_coprocessor_recv[0].tid),
+        .application_recv_tlast(axis_coprocessor_recv[0].tlast),
+        .application_recv_tvalid(axis_coprocessor_recv[0].tvalid),
+        .application_recv_tready(axis_coprocessor_recv[0].tready),
+        .application_mmio_awaddr(axi_coprocessor_mmio[0].awaddr),
+        .application_mmio_awprot(axi_coprocessor_mmio[0].awprot),
+        .application_mmio_awvalid(axi_coprocessor_mmio[0].awvalid),
+        .application_mmio_awready(axi_coprocessor_mmio[0].awready),
+        .application_mmio_wdata(axi_coprocessor_mmio[0].wdata),
+        .application_mmio_wstrb(axi_coprocessor_mmio[0].wstrb),
+        .application_mmio_wvalid(axi_coprocessor_mmio[0].wvalid),
+        .application_mmio_wready(axi_coprocessor_mmio[0].wready),
+        .application_mmio_bresp(axi_coprocessor_mmio[0].bresp),
+        .application_mmio_bvalid(axi_coprocessor_mmio[0].bvalid),
+        .application_mmio_bready(axi_coprocessor_mmio[0].bready),
+        .application_mmio_araddr(axi_coprocessor_mmio[0].araddr),
+        .application_mmio_arprot(axi_coprocessor_mmio[0].arprot),
+        .application_mmio_arvalid(axi_coprocessor_mmio[0].arvalid),
+        .application_mmio_arready(axi_coprocessor_mmio[0].arready),
+        .application_mmio_rdata(axi_coprocessor_mmio[0].rdata),
+        .application_mmio_rresp(axi_coprocessor_mmio[0].rresp),
+        .application_mmio_rvalid(axi_coprocessor_mmio[0].rvalid),
+        .application_mmio_rready(axi_coprocessor_mmio[0].rready),
+        .status_bound(r5_status_bound), .status_ready(r5_status_ready),
+        .status_fault(r5_status_fault), .status_quiesced(r5_status_quiesced),
+        .status_idle(r5_status_idle), .status_state(r5_status_state),
+        .status_endpoint(r5_status_endpoint), .status_generation(r5_status_generation)
+    );
+    assign axi_coprocessor_mmio[0].awqos = '0;
+    assign axi_coprocessor_mmio[0].awregion = '0;
+    assign axi_coprocessor_mmio[0].arqos = '0;
+    assign axi_coprocessor_mmio[0].arregion = '0;
+    assign coprocessor_status[0] = '{bound: r5_status_bound, ready: r5_status_ready,
+                                     fault: r5_status_fault, quiesced: r5_status_quiesced,
+                                     idle: r5_status_idle, state: r5_status_state,
+                                     endpoint_id: r5_status_endpoint,
+                                     binding_generation: r5_status_generation};
+
+    for (genvar coprocessor_index = 1;
+         coprocessor_index < N_REGIONS*N_COPROCESSOR_PORTS;
+         coprocessor_index++) begin
+        always_comb axis_coprocessor_recv[coprocessor_index].tie_off_m();
+        always_comb axis_coprocessor_send[coprocessor_index].tie_off_s();
+        always_comb axi_coprocessor_mmio[coprocessor_index].tie_off_m();
+        assign coprocessor_status[coprocessor_index] = '0;
+    end
+{% else %}
+    for (genvar coprocessor_index = 0;
+         coprocessor_index < N_REGIONS*N_COPROCESSOR_PORTS;
+         coprocessor_index++) begin
+        always_comb axis_coprocessor_recv[coprocessor_index].tie_off_m();
+        always_comb axis_coprocessor_send[coprocessor_index].tie_off_s();
+        always_comb axi_coprocessor_mmio[coprocessor_index].tie_off_m();
+        assign coprocessor_status[coprocessor_index] = '0;
+    end
+{% endif %}
+{% endif %}
 {% for i in range(0, cnfg.n_reg) %}
     design_user_wrapper_{{ i }} inst_user_wrapper_{{ i }} ( 
         
@@ -1280,6 +1405,43 @@ module design_dynamic_top #(
         .axis_host_src_tlast            (axis_host_out_ul[{{ i }}].tlast),
         .axis_host_src_tready           (axis_host_out_ul[{{ i }}].tready),
         .axis_host_src_tvalid           (axis_host_out_ul[{{ i }}].tvalid),
+{% endif %}
+{% if cnfg.n_coprocessor_ports > 0 %}
+        // LOGICAL CO-PROCESSOR PORTS
+    {% for j in range(0, cnfg.n_coprocessor_ports) %}
+        .coprocessor_{{j}}_recv_tdata(axis_coprocessor_recv[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tdata),
+        .coprocessor_{{j}}_recv_tkeep(axis_coprocessor_recv[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tkeep),
+        .coprocessor_{{j}}_recv_tid(axis_coprocessor_recv[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tid),
+        .coprocessor_{{j}}_recv_tlast(axis_coprocessor_recv[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tlast),
+        .coprocessor_{{j}}_recv_tready(axis_coprocessor_recv[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tready),
+        .coprocessor_{{j}}_recv_tvalid(axis_coprocessor_recv[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tvalid),
+        .coprocessor_{{j}}_send_tdata(axis_coprocessor_send[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tdata),
+        .coprocessor_{{j}}_send_tkeep(axis_coprocessor_send[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tkeep),
+        .coprocessor_{{j}}_send_tid(axis_coprocessor_send[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tid),
+        .coprocessor_{{j}}_send_tlast(axis_coprocessor_send[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tlast),
+        .coprocessor_{{j}}_send_tready(axis_coprocessor_send[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tready),
+        .coprocessor_{{j}}_send_tvalid(axis_coprocessor_send[{{i}}*N_COPROCESSOR_PORTS+{{j}}].tvalid),
+        .coprocessor_{{j}}_mmio_araddr(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].araddr),
+        .coprocessor_{{j}}_mmio_arprot(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].arprot),
+        .coprocessor_{{j}}_mmio_arready(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].arready),
+        .coprocessor_{{j}}_mmio_arvalid(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].arvalid),
+        .coprocessor_{{j}}_mmio_awaddr(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].awaddr),
+        .coprocessor_{{j}}_mmio_awprot(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].awprot),
+        .coprocessor_{{j}}_mmio_awready(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].awready),
+        .coprocessor_{{j}}_mmio_awvalid(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].awvalid),
+        .coprocessor_{{j}}_mmio_bready(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].bready),
+        .coprocessor_{{j}}_mmio_bresp(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].bresp),
+        .coprocessor_{{j}}_mmio_bvalid(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].bvalid),
+        .coprocessor_{{j}}_mmio_rdata(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].rdata),
+        .coprocessor_{{j}}_mmio_rready(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].rready),
+        .coprocessor_{{j}}_mmio_rresp(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].rresp),
+        .coprocessor_{{j}}_mmio_rvalid(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].rvalid),
+        .coprocessor_{{j}}_mmio_wdata(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].wdata),
+        .coprocessor_{{j}}_mmio_wready(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].wready),
+        .coprocessor_{{j}}_mmio_wstrb(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].wstrb),
+        .coprocessor_{{j}}_mmio_wvalid(axi_coprocessor_mmio[{{i}}*N_COPROCESSOR_PORTS+{{j}}].wvalid),
+        .coprocessor_{{j}}_status(coprocessor_status[{{i}}*N_COPROCESSOR_PORTS+{{j}}]),
+    {% endfor %}
 {% endif %}
 {% if cnfg.en_mem %}
         // CARD STREAMS
