@@ -124,7 +124,7 @@ module design_dynamic_top #(
     input  wire[7:0]                            mac_status,
 {% endif %}
 
-{% if cnfg.en_aurora_1 or cnfg.en_braid_gty %}
+{% if cnfg.en_aurora_1 or cnfg.en_qlink_gty %}
     // Aurora 64B/66B (256-bit AXIS, aclk domain, status sidebands)
     AXI4S.s                                     s_aurora_rx,
     AXI4S.m                                     m_aurora_tx,
@@ -132,17 +132,17 @@ module design_dynamic_top #(
     input  wire[3:0]                            aurora_lane_up,
 {% endif %}
 
-{% if cnfg.en_braid_gty %}
-    // BRAID reuses the two AXIS ports above, but NOT the aclk domain: m_aurora_tx
-    // belongs to braid_tx_clk and s_aurora_rx to braid_rx_clk. The GT user clocks
+{% if cnfg.en_qlink_gty %}
+    // QLINK reuses the two AXIS ports above, but NOT the aclk domain: m_aurora_tx
+    // belongs to qlink_tx_clk and s_aurora_rx to qlink_rx_clk. The GT user clocks
     // come in here so the vFPGA can run the protocol core on them with no CDC in
     // the syndrome path. dclk, aclk and uclk already cross this boundary, so two
     // more clocks is a precedented crossing rather than a new kind of one.
-    input  wire                                 braid_tx_clk,
-    input  wire                                 braid_rx_clk,
-    input  wire                                 braid_tx_rstn,
-    input  wire                                 braid_rx_rstn,
-    output wire[2:0]                            braid_loopback_sel,
+    input  wire                                 qlink_tx_clk,
+    input  wire                                 qlink_rx_clk,
+    input  wire                                 qlink_tx_rstn,
+    input  wire                                 qlink_rx_rstn,
+    output wire[2:0]                            qlink_loopback_sel,
 {% endif %}
 
 {% if cnfg.en_wb %}
@@ -1544,7 +1544,7 @@ module design_dynamic_top #(
         .mac_status(mac_status),
 {% endif %}
 
-{% if (cnfg.en_aurora_1 or cnfg.en_braid_gty) and i == 0 %}
+{% if (cnfg.en_aurora_1 or cnfg.en_qlink_gty) and i == 0 %}
         .aurora_rx_tdata(s_aurora_rx.tdata),
         .aurora_rx_tkeep(s_aurora_rx.tkeep),
         .aurora_rx_tlast(s_aurora_rx.tlast),
@@ -1559,12 +1559,12 @@ module design_dynamic_top #(
         .aurora_lane_up(aurora_lane_up),
 {% endif %}
 
-{% if cnfg.en_braid_gty and i == 0 %}
-        .braid_tx_clk(braid_tx_clk),
-        .braid_rx_clk(braid_rx_clk),
-        .braid_tx_rstn(braid_tx_rstn),
-        .braid_rx_rstn(braid_rx_rstn),
-        .braid_loopback_sel(braid_loopback_sel),
+{% if cnfg.en_qlink_gty and i == 0 %}
+        .qlink_tx_clk(qlink_tx_clk),
+        .qlink_rx_clk(qlink_rx_clk),
+        .qlink_tx_rstn(qlink_tx_rstn),
+        .qlink_rx_rstn(qlink_rx_rstn),
+        .qlink_loopback_sel(qlink_loopback_sel),
 {% endif %}
 
 {% if cnfg.en_p2p %}

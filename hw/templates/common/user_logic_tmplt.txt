@@ -107,20 +107,20 @@ module design_user_logic_c{{ c_cnfg }}_{{ c_reg }} (
     input  wire[7:0]            mac_status,
 {% endif %}
 
-{% if (cnfg.en_aurora_1 or cnfg.en_braid_gty) and c_reg == 0 %}
+{% if (cnfg.en_aurora_1 or cnfg.en_qlink_gty) and c_reg == 0 %}
     AXI4S.s                     axis_aurora_rx,
     AXI4S.m                     axis_aurora_tx,
     input  wire                 aurora_channel_up,
     input  wire[3:0]            aurora_lane_up,
 {% endif %}
 
-{% if cnfg.en_braid_gty and c_reg == 0 %}
-    // BRAID: axis_aurora_tx is in braid_tx_clk, axis_aurora_rx in braid_rx_clk.
-    input  wire                 braid_tx_clk,
-    input  wire                 braid_rx_clk,
-    input  wire                 braid_tx_rstn,
-    input  wire                 braid_rx_rstn,
-    output wire[2:0]            braid_loopback_sel,
+{% if cnfg.en_qlink_gty and c_reg == 0 %}
+    // QLINK: axis_aurora_tx is in qlink_tx_clk, axis_aurora_rx in qlink_rx_clk.
+    input  wire                 qlink_tx_clk,
+    input  wire                 qlink_rx_clk,
+    input  wire                 qlink_tx_rstn,
+    input  wire                 qlink_rx_rstn,
+    output wire[2:0]            qlink_loopback_sel,
 {% endif %}
 
 {% if cnfg.en_amc and c_reg == 0 %}

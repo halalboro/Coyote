@@ -252,7 +252,7 @@ module design_user_wrapper_{{ c_reg }} (
     (* io_buffer_type = "none" *) input  logic[7:0]                           mac_status,
 {% endif %}
 
-{% if (cnfg.en_aurora_1 or cnfg.en_braid_gty) and c_reg == 0 %}
+{% if (cnfg.en_aurora_1 or cnfg.en_qlink_gty) and c_reg == 0 %}
     // Aurora 64B/66B AXI4-Stream (256-bit user-side, aclk domain). Single-vFPGA
     // routing: bound to wrapper instance 0 only (mirrors bypass pattern).
     (* io_buffer_type = "none" *) input  logic[255:0]                         aurora_rx_tdata,
@@ -269,14 +269,14 @@ module design_user_wrapper_{{ c_reg }} (
     (* io_buffer_type = "none" *) input  logic[3:0]                           aurora_lane_up,
 {% endif %}
 
-{% if cnfg.en_braid_gty and c_reg == 0 %}
-    // BRAID GT user clocks. aurora_tx_* above is in braid_tx_clk and aurora_rx_*
-    // in braid_rx_clk -- NOT aclk. See braid_gty_wrapper.sv.
-    (* io_buffer_type = "none" *) input  logic                                braid_tx_clk,
-    (* io_buffer_type = "none" *) input  logic                                braid_rx_clk,
-    (* io_buffer_type = "none" *) input  logic                                braid_tx_rstn,
-    (* io_buffer_type = "none" *) input  logic                                braid_rx_rstn,
-    (* io_buffer_type = "none" *) output logic[2:0]                           braid_loopback_sel,
+{% if cnfg.en_qlink_gty and c_reg == 0 %}
+    // QLINK GT user clocks. aurora_tx_* above is in qlink_tx_clk and aurora_rx_*
+    // in qlink_rx_clk -- NOT aclk. See qlink_gty_wrapper.sv.
+    (* io_buffer_type = "none" *) input  logic                                qlink_tx_clk,
+    (* io_buffer_type = "none" *) input  logic                                qlink_rx_clk,
+    (* io_buffer_type = "none" *) input  logic                                qlink_tx_rstn,
+    (* io_buffer_type = "none" *) input  logic                                qlink_rx_rstn,
+    (* io_buffer_type = "none" *) output logic[2:0]                           qlink_loopback_sel,
 {% endif %}
 
 {% if cnfg.en_p2p %}
@@ -790,7 +790,7 @@ module design_user_wrapper_{{ c_reg }} (
     assign axis_net_raw_tx.tready    = net_raw_tx_tready;
 {% endif %}
 
-{% if (cnfg.en_aurora_1 or cnfg.en_braid_gty) and c_reg == 0 %}
+{% if (cnfg.en_aurora_1 or cnfg.en_qlink_gty) and c_reg == 0 %}
     AXI4S #(.AXI4S_DATA_BITS(256)) axis_aurora_rx (.*);
     AXI4S #(.AXI4S_DATA_BITS(256)) axis_aurora_tx (.*);
 
@@ -1439,18 +1439,18 @@ module design_user_wrapper_{{ c_reg }} (
         .axis_net_raw_tx(axis_net_raw_tx),
         .mac_status(mac_status),
     {% endif %}
-    {% if (cnfg.en_aurora_1 or cnfg.en_braid_gty) and c_reg == 0 %}
+    {% if (cnfg.en_aurora_1 or cnfg.en_qlink_gty) and c_reg == 0 %}
         .axis_aurora_rx(axis_aurora_rx),
         .axis_aurora_tx(axis_aurora_tx),
         .aurora_channel_up(aurora_channel_up),
         .aurora_lane_up(aurora_lane_up),
     {% endif %}
-    {% if cnfg.en_braid_gty and c_reg == 0 %}
-        .braid_tx_clk(braid_tx_clk),
-        .braid_rx_clk(braid_rx_clk),
-        .braid_tx_rstn(braid_tx_rstn),
-        .braid_rx_rstn(braid_rx_rstn),
-        .braid_loopback_sel(braid_loopback_sel),
+    {% if cnfg.en_qlink_gty and c_reg == 0 %}
+        .qlink_tx_clk(qlink_tx_clk),
+        .qlink_rx_clk(qlink_rx_clk),
+        .qlink_tx_rstn(qlink_tx_rstn),
+        .qlink_rx_rstn(qlink_rx_rstn),
+        .qlink_loopback_sel(qlink_loopback_sel),
     {% endif %}
     {% if cnfg.en_amc and c_reg == 0 %}
         .m_axi_ocm(m_axi_ocm_user),

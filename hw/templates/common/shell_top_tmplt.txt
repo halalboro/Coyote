@@ -1222,18 +1222,18 @@ module shell_top (
     );
 {% endif %}
 
-{% if cnfg.en_braid_gty %}
+{% if cnfg.en_qlink_gty %}
     // ================-----------------------------------------------------------------
-    // BRAID raw-GTY link (occupies QSFP1)
+    // QLINK raw-GTY link (occupies QSFP1)
     // ================-----------------------------------------------------------------
     // Single GTY lane, 10.3125 Gbps, 8B/10B, for low-latency QEC syndrome
-    // transport (examples/16_braid). Deliberately reuses the SAME signal names
+    // transport (examples/16_qlink). Deliberately reuses the SAME signal names
     // and 256-bit AXIS shape as the Aurora branch above, so the dynamic/user
-    // templates and the vFPGA need no BRAID-specific plumbing. Mutually
+    // templates and the vFPGA need no QLINK-specific plumbing. Mutually
     // exclusive with en_aurora_1 and en_net_1 -- enforced in FindCoyoteHW.cmake.
     //
     // WARNING: unlike the Aurora branch above, these two streams are NOT in the
-    // aclk domain. aurora_tx is in braid_tx_clk and aurora_rx is in braid_rx_clk
+    // aclk domain. aurora_tx is in qlink_tx_clk and aurora_rx is in qlink_rx_clk
     // -- the fabric CDC FIFOs that used to sit inside the wrapper were the
     // single largest known term in the latency budget and are gone. The four
     // clock/reset wires below carry the domains up to the vFPGA, which runs the
@@ -1245,10 +1245,10 @@ module shell_top (
 
     logic        aurora_channel_up;
     logic [3:0]  aurora_lane_up;
-    logic        braid_tx_clk, braid_rx_clk, braid_tx_rstn, braid_rx_rstn;
-    logic [2:0]  braid_loopback_sel;
+    logic        qlink_tx_clk, qlink_rx_clk, qlink_tx_rstn, qlink_rx_rstn;
+    logic [2:0]  qlink_loopback_sel;
 
-    braid_gty_wrapper #(.LOOPBACK({{ cnfg.en_braid_loopback }})) inst_braid_gty (
+    qlink_gty_wrapper #(.LOOPBACK({{ cnfg.en_qlink_loopback }})) inst_qlink_gty (
         .init_clk     (dclk),
         .sys_reset    (sys_reset),
         .aclk         (aclk),
@@ -1260,13 +1260,13 @@ module shell_top (
         .gt_rxn_in    (gt1_rxn_in[0]),
         .gt_txp_out   (gt1_txp_out[0]),
         .gt_txn_out   (gt1_txn_out[0]),
-        .tx_clk       (braid_tx_clk),
-        .rx_clk       (braid_rx_clk),
-        .tx_rstn      (braid_tx_rstn),
-        .rx_rstn      (braid_rx_rstn),
-        .m_braid_rx   (aurora_rx),
-        .s_braid_tx   (aurora_tx),
-        .loopback_sel (braid_loopback_sel),
+        .tx_clk       (qlink_tx_clk),
+        .rx_clk       (qlink_rx_clk),
+        .tx_rstn      (qlink_tx_rstn),
+        .rx_rstn      (qlink_rx_rstn),
+        .m_qlink_rx   (aurora_rx),
+        .s_qlink_tx   (aurora_tx),
+        .loopback_sel (qlink_loopback_sel),
         .channel_up   (aurora_channel_up),
         .lane_up      (aurora_lane_up)
     );
@@ -1982,18 +1982,18 @@ module shell_top (
         .m_net_raw_tx(net_raw_tx),
         .mac_status(mac_status),
 {% endif %}
-{% if cnfg.en_aurora_1 or cnfg.en_braid_gty %}
+{% if cnfg.en_aurora_1 or cnfg.en_qlink_gty %}
         .s_aurora_rx(aurora_rx),
         .m_aurora_tx(aurora_tx),
         .aurora_channel_up(aurora_channel_up),
         .aurora_lane_up(aurora_lane_up),
 {% endif %}
-{% if cnfg.en_braid_gty %}
-        .braid_tx_clk(braid_tx_clk),
-        .braid_rx_clk(braid_rx_clk),
-        .braid_tx_rstn(braid_tx_rstn),
-        .braid_rx_rstn(braid_rx_rstn),
-        .braid_loopback_sel(braid_loopback_sel),
+{% if cnfg.en_qlink_gty %}
+        .qlink_tx_clk(qlink_tx_clk),
+        .qlink_rx_clk(qlink_rx_clk),
+        .qlink_tx_rstn(qlink_tx_rstn),
+        .qlink_rx_rstn(qlink_rx_rstn),
+        .qlink_loopback_sel(qlink_loopback_sel),
 {% endif %}
 {% if cnfg.en_wb %}
         .m_wback(wback),
