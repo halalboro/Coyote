@@ -596,7 +596,7 @@ long vfpga_dev_ioctl(struct file *file, unsigned int command, unsigned long arg)
                     return -EINVAL;
                 int32_t ctid = (int32_t) tmp[0];
                 dbg_info("marking notification with vfpga ID %d, ctid %d as processed\n", device->id, ctid);
-                mutex_unlock(&user_notifier_lock[device->id][ctid]);
+                up(&user_notifier_lock[device->id][ctid]);
             }
             break;
         
