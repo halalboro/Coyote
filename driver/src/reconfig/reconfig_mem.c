@@ -115,32 +115,3 @@ fail_alloc:
     mutex_unlock(&device->mem_lock);
     return -ENOMEM;
 }
-
-int free_reconfig_buffer(struct reconfig_dev *device, uint64_t vaddr, pid_t pid, uint32_t crid) {
-    BUG_ON(!device);
-
-    // Iterate through metadata map of allocated buffers and free pages, delete map entry
-    struct reconfig_buff_metadata *tmp_buff;
-    hash_for_each_possible(reconfig_buffs_map, tmp_buff, entry, vaddr) {
-        if (tmp_buff->vaddr == vaddr && tmp_buff->pid == pid && tmp_buff->crid == crid) {
-            for (int i = 0; i < tmp_buff->n_pages; i++) {
-                if (tmp_buff->pages[i]) {
-                    dma_unmap_single(
-                        &device->bd_data->pci_dev->dev,
-                        tmp_buff->hpages[i],
-                        RECONFIG_BUFF_PAGE_SIZE,
-                        DMA_TO_DEVICE
-                    );
-                    __free_pages(tmp_buff->pages[i], RECONFIG_BUFF_PAGE_SHIFT - PAGE_SHIFT);
-                }
-            }
-            vfree(tmp_buff->pages);
-            vfree(tmp_buff->hpages);
-            hash_del(&tmp_buff->entry);
-        }
-    }
-
-    // NOTE: All the functions from above (__free_pages, vfree, hash_del are void)
-    // Therefore; there is no error handling, and hence, always return 0
-    return 0;
-}

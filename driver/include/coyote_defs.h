@@ -801,9 +801,13 @@ struct pf_aligned_desc {
  * Holds all the information needed to perform reconfiguration with this buffer,
  * where the buffer holds the partial bitstream to be loaded
  */
+struct reconfig_dev;
+
 struct reconfig_buff_metadata {
     /// Hash table entry for easy lookups in reconfig_buffs_map
     struct hlist_node entry;
+
+    struct reconfig_dev *device;
 
     /// Buffer starting virtual address
     uint64_t vaddr;
