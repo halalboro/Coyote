@@ -1,10 +1,10 @@
-val spinalVersion = "1.12.0"
+val spinalVersion = "1.14.2"
 
 lazy val root = (project in file("."))
   .settings(
     name         := "coyote-spinal-kernel",
     version      := "1.0",
-    scalaVersion := "2.13.12",
+    scalaVersion := "2.13.18",
 
     libraryDependencies ++= Seq(
       "com.github.spinalhdl" %% "spinalhdl-core" % spinalVersion,

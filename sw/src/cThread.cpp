@@ -26,6 +26,22 @@
 
 #include <coyote/cThread.hpp>
 
+#include <chrono>
+#include <string>
+#include <random>
+#include <fstream>
+#include <iostream>
+
+#include <fcntl.h>
+#include <netdb.h>
+#include <syslog.h>
+
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <linux/mman.h>
+
 namespace coyote {
 
 /// Event handler function which processes user interrupts in a dedicated thread
@@ -355,7 +371,7 @@ void cThread::munmapFpga() {
 	wback = 0;
 }
 
-void cThread::userMap(void *vaddr, uint32_t len, int32_t mem_block) {
+void cThread::userMap(void *vaddr, uint64_t len, int32_t mem_block) {
     DBG1("cThread: Called userMap to map user buffer, vaddr " << vaddr << ", length " << len << ", memory block " << mem_block << " and ctid " << ctid);
 
     uint64_t tmp[MAX_USER_ARGS];
@@ -515,7 +531,7 @@ void* cThread::getMem(CoyoteAlloc&& alloc) {
                 } else {
                     int err = errno;
                     fprintf(stderr,
-                        "cThread: Hugepage allocation failed: Shell pg_l_bits=%u (requested page size = %lu KB), "
+                        "cThread: Hugepage allocation failed: Shell pg_l_bits=%u (requested page size = %lu B), "
                         "alloc.size=%zu, errno=%d (%s)\n",
                         fcnfg.ctrl_reg.pg_l_bits,
                         1UL << fcnfg.ctrl_reg.pg_l_bits,
@@ -1177,7 +1193,7 @@ void cThread::connSync(bool client) {
     }
 }
 
-void* cThread::initRDMA(uint32_t buffer_size, uint16_t port, const char* server_address) {
+void* cThread::initRDMA(uint64_t buffer_size, uint16_t port, const char* server_address, void* mem) {
     // Served address provided, so this node is the client
     if (server_address) {
         DBG3("cThread: initRDMA called from client side with server address " << server_address);
@@ -1217,9 +1233,14 @@ void* cThread::initRDMA(uint32_t buffer_size, uint16_t port, const char* server_
             is_connected = true;
         }
 
-        // Allocate memory for RDMA operations
-        void *mem = getMem({CoyoteAllocType::HPF, buffer_size, true});
-        
+        // Allocate memory for RDMA operations, or use the user-provided staging buffer.
+        if (mem == nullptr) {
+            mem = getMem({CoyoteAllocType::HPF, buffer_size, true});
+        } else {
+            qpair->local.vaddr = mem;
+            qpair->local.size  = buffer_size;
+        }
+
         // Send the memory address to the server
         if (write(connfd, &(qpair->local), sizeof(ibvQ)) != sizeof(ibvQ)) {
             throw std::runtime_error("ERROR: Failed to send queue to server");
@@ -1288,7 +1309,12 @@ void* cThread::initRDMA(uint32_t buffer_size, uint16_t port, const char* server_
                 throw std::runtime_error("ERROR: Failed to read queue from client");
             }
 
-            void *mem = getMem({CoyoteAllocType::HPF, buffer_size, true});
+            if (mem == nullptr) {
+                mem = getMem({CoyoteAllocType::HPF, buffer_size, true});
+            } else {
+                qpair->local.vaddr = mem;
+                qpair->local.size  = buffer_size;
+            }
 
             // Send QP to the client
             if (::write(connfd, &(qpair->local), sizeof(ibvQ)) != sizeof(ibvQ))  {

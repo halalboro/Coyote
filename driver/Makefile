@@ -32,10 +32,10 @@ coyote_driver-objs += src/coyote_sysfs.o
 
 ifeq ($(TARGET_PLATFORM), versal)
 coyote_driver-objs += src/platform/pci_qdma.o
-EXTRA_CFLAGS += -DPLATFORM_VERSAL
+ccflags-y += -DPLATFORM_VERSAL
 else ifeq ($(TARGET_PLATFORM), ultrascale_plus)
 coyote_driver-objs += src/platform/pci_xdma.o
-EXTRA_CFLAGS += -DPLATFORM_ULTRASCALE_PLUS
+ccflags-y += -DPLATFORM_ULTRASCALE_PLUS
 else
 $(error "Unsupported TARGET_PLATFORM specified. Supported options are: ultrascale_plus, versal")
 endif
@@ -57,7 +57,7 @@ coyote_driver-objs += src/vfpga/vfpga_uisr.o
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 
 BUILD_DIR := $(shell pwd)/build
-EXTRA_CFLAGS += -std=gnu11 -Wno-declaration-after-statement -I$(M)/include -I$(M)/include/reconfig -I$(M)/include/vfpga -I$(M)/include/platform
+ccflags-y += -std=gnu11 -Wno-declaration-after-statement -I$(src)/include -I$(src)/include/reconfig -I$(src)/include/vfpga -I$(src)/include/platform
 
 # To avoid polluting the source files with a bunch of build (*.o, *.mod etc.) files, the source files are temporarily copied to the build folder for compilation
 all:

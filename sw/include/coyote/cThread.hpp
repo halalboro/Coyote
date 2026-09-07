@@ -28,24 +28,10 @@
 #define _COYOTE_CTHREAD_HPP_
 
 #include <thread>
-#include <chrono>
-#include <string>
-#include <random>
-#include <fstream>
-#include <iostream>
 #include <functional>
-#include <unordered_map> 
+#include <unordered_map>
 
-#include <fcntl.h>
-#include <netdb.h>
-#include <syslog.h>
 #include <unistd.h>
-
-#include <sys/mman.h>
-#include <sys/ioctl.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-#include <linux/mman.h>
 
 #include <boost/interprocess/sync/named_mutex.hpp>
 
@@ -228,7 +214,7 @@ protected:
 	 * @param mem_block What memory block to store this memory in; only applicable to Versal devices
 	 *		When -1, the driver picks the first PC with sufficient space
 	 */
-	void userMap(void *vaddr, uint32_t len, int32_t mem_block = -1);
+	void userMap(void *vaddr, uint64_t len, int32_t mem_block = -1);
 
 	/**
 	 * @brief Unmaps a buffer from the vFPGA's TLB.
@@ -362,8 +348,10 @@ protected:
 	 * @param buffer_size Size of the buffer to be allocated for RDMA operations
 	 * @param port Port number to be used for the out-of-band connection
 	 * @param server_address Optional server address to connect to; if not provided, this cThread acts as the server
+	 * @param mem Optional pre-allocated staging buffer for RDMA operations; if provided (not nullptr),
+	 *            it is used directly and no buffer is allocated internally via getMem
 	 */
-	void* initRDMA(uint32_t buffer_size, uint16_t port, const char* server_address = nullptr);
+	void* initRDMA(uint64_t buffer_size, uint16_t port, const char* server_address = nullptr, void* mem = nullptr);
 	
 	/**
 	 * @brief Opposite of initRDMA; releases the the out-of-band connection which was used to exchange QP
