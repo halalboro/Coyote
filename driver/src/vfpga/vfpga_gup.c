@@ -30,28 +30,13 @@ int mmu_handler_gup(struct vfpga_dev *device, uint64_t vaddr, uint64_t len, int3
     struct bus_driver_data *bd_data = device->bd_data;
 
     // Find context (host process ID)
-    struct task_struct *curr_task = get_pid_task(find_vpid(hpid), PIDTYPE_PID);
-    if (!curr_task) {
-        pr_err("hpid %d not found\n", hpid);
-        return -ESRCH;
-    }
+    struct task_struct *curr_task = pid_task(find_vpid(hpid), PIDTYPE_PID);
     dbg_info("hpid found = %d", hpid);
-    struct mm_struct *curr_mm = get_task_mm(curr_task);
-    if (!curr_mm) {
-        put_task_struct(curr_task);
-        return -ESRCH;
-    }
+    struct mm_struct *curr_mm = curr_task->mm;
 
     // Check if the request area is huge page or not
-    mmap_read_lock(curr_mm);
     struct vm_area_struct *vma_area_init = find_vma(curr_mm, vaddr);
-    if (!vma_area_init || vaddr < vma_area_init->vm_start) {
-        mmap_read_unlock(curr_mm);
-        ret_val = -EFAULT;
-        goto out;
-    }
     int hugepages = is_vm_hugetlb_page(vma_area_init);
-    mmap_read_unlock(curr_mm);
     struct tlb_metadata *tlb_meta = hugepages ? bd_data->ltlb_meta : bd_data->stlb_meta;
 
     // Align to a page boundary and calculate the number of pages bust on the buffer lenght (in bytes)
@@ -104,8 +89,7 @@ int mmu_handler_gup(struct vfpga_dev *device, uint64_t vaddr, uint64_t len, int3
         user_pg = tlb_get_user_pages(device, &pf_desc, hpid, curr_task, curr_mm, mem_block);
         if(!user_pg) {
             pr_err("user pages could not be obtained\n");
-            ret_val = -ENOMEM;
-            goto out;
+            return -ENOMEM;
         }
 
         // In case there are caching effects, return a non-zero code to the user space
@@ -124,9 +108,6 @@ int mmu_handler_gup(struct vfpga_dev *device, uint64_t vaddr, uint64_t len, int3
         }
     }
 
-out:
-    mmput(curr_mm);
-    put_task_struct(curr_task);
     return ret_val;
 }
 
@@ -276,8 +257,8 @@ void tlb_unmap_gup(struct vfpga_dev *device, struct user_pages *user_pg, pid_t h
         vaddr_tmp += pg_inc;
     }
 
-    // Not interruptible: callers unpin the pages right after this returns
-    wait_event(device->waitqueue_invldt, atomic_read(&device->wait_invldt) == FLAG_SET);
+    // Wait for completion
+    wait_event_interruptible(device->waitqueue_invldt, atomic_read(&device->wait_invldt) == FLAG_SET);
     atomic_set(&device->wait_invldt, FLAG_CLR);
 }
 
@@ -316,7 +297,6 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
     // Pin the pages
     // On newer kernels, pin_user_pages_remote is preferred over get_user_pages_remote for DMA,
     // as it guarantees that the pages remain pinned (and not just the page struct) until explicitly unpinned
-    mmap_read_lock(curr_mm);
     #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
         ret_val = pin_user_pages_remote(curr_mm, (unsigned long) pf_desc->vaddr << PAGE_SHIFT, pf_desc->n_pages, FOLL_WRITE | FOLL_LONGTERM, user_pg->pages, NULL);
     #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
@@ -326,15 +306,12 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
     #else
         ret_val = get_user_pages_remote(curr_task, curr_mm, (unsigned long) pf_desc->vaddr << PAGE_SHIFT, pf_desc->n_pages, 1, user_pg->pages, NULL, NULL);
     #endif
-    mmap_read_unlock(curr_mm);
+    dbg_info("pin_user_pages_remote(%llx, n_pages = %d, page start = %lx, hugepages = %d)\n", pf_desc->vaddr, pf_desc->n_pages, page_to_pfn(user_pg->pages[0]), pf_desc->hugepages);
 
-    if (ret_val < 0 || ret_val < pf_desc->n_pages) {
+    if (ret_val < pf_desc->n_pages) {
         pr_warn("could not get all user pages, %d\n", ret_val);
-        if (ret_val < 0)
-            ret_val = 0;
         goto fail_host_alloc;
     }
-    dbg_info("pin_user_pages_remote(%llx, n_pages = %d, page start = %lx, hugepages = %d)\n", pf_desc->vaddr, pf_desc->n_pages, page_to_pfn(user_pg->pages[0]), pf_desc->hugepages);
 
     // Flush cache
     for (int i = 0; i < pf_desc->n_pages; i++) {
@@ -376,8 +353,12 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
             // However, in some cases (e.g., migrating data between the host and FPGA memory)
             // Coyote still needs all the entries in the hpages array; since the transfers
             // are issued in 4k granularity from the driver
-            for (int j = i + 1; j < i + device->bd_data->n_pages_in_huge && j < pf_desc->n_pages; j++) {
+            for (int j = i + 1; j < i + device->bd_data->n_pages_in_huge; j++) {
                 user_pg->hpages[j] = user_pg->hpages[i] + (j - i) * PAGE_SIZE;
+
+                if (j >= pf_desc->n_pages) {
+                    break;
+                }
             }
 
         }
@@ -541,9 +522,8 @@ int tlb_put_user_pages(struct vfpga_dev *device, uint64_t vaddr, int32_t ctid, p
     uint64_t vaddr_tmp = (vaddr & bd_data->stlb_meta->page_mask) >> bd_data->stlb_meta->page_shift;
 
     struct user_pages *tmp_entry;
-    struct hlist_node *tmp_next;
-    hash_for_each_possible_safe(user_buff_map[device->id][ctid], tmp_entry, tmp_next, entry, vaddr_tmp) {
-        if(vaddr_tmp >= tmp_entry->vaddr && vaddr_tmp < tmp_entry->vaddr + tmp_entry->n_pages) {
+    hash_for_each_possible(user_buff_map[device->id][ctid], tmp_entry, entry, vaddr_tmp) {
+        if(vaddr_tmp >= tmp_entry->vaddr && vaddr_tmp <= tmp_entry->vaddr + tmp_entry->n_pages) {
             // Unmap from TLB
             tlb_unmap_gup(device, tmp_entry, hpid);
 
@@ -603,7 +583,6 @@ int tlb_put_user_pages(struct vfpga_dev *device, uint64_t vaddr, int32_t ctid, p
 
             // Remove from map
             hash_del(&tmp_entry->entry);
-            kfree(tmp_entry);
         }
     }
 
@@ -613,13 +592,12 @@ int tlb_put_user_pages(struct vfpga_dev *device, uint64_t vaddr, int32_t ctid, p
 int tlb_put_user_pages_ctid(struct vfpga_dev *device, int32_t ctid, pid_t hpid, int dirtied) {
     int i, bkt;
     struct user_pages *tmp_entry;
-    struct hlist_node *tmp_next;
 
     BUG_ON(!device);
     struct bus_driver_data *bd_data = device->bd_data;
     BUG_ON(!bd_data);
 
-    hash_for_each_safe(user_buff_map[device->id][ctid], bkt, tmp_next, tmp_entry, entry) {
+    hash_for_each(user_buff_map[device->id][ctid], bkt, tmp_entry, entry) {
         // Unmap from TLB
         tlb_unmap_gup(device, tmp_entry, hpid);
         
@@ -679,7 +657,6 @@ int tlb_put_user_pages_ctid(struct vfpga_dev *device, int32_t ctid, pid_t hpid, 
 
         // Remove from map
         hash_del(&tmp_entry->entry);
-        kfree(tmp_entry);
     }
 
     return 0;
@@ -690,7 +667,7 @@ void migrate_to_card(struct vfpga_dev *device, struct user_pages *user_pg) {
 
     trigger_dma_offload(device, user_pg->hpages, user_pg->cpages, user_pg->n_pages, user_pg->huge);
     
-    wait_event(device->waitqueue_offload, atomic_read(&device->wait_offload) == FLAG_SET);
+    wait_event_interruptible(device->waitqueue_offload, atomic_read(&device->wait_offload) == FLAG_SET);
     atomic_set(&device->wait_offload, FLAG_CLR);
 
     mutex_unlock(&device->offload_lock);
@@ -701,7 +678,7 @@ void migrate_to_host(struct vfpga_dev *device, struct user_pages *user_pg) {
 
     trigger_dma_sync(device, user_pg->hpages, user_pg->cpages, user_pg->n_pages, user_pg->huge);
     
-    wait_event(device->waitqueue_sync, atomic_read(&device->wait_sync) == FLAG_SET);
+    wait_event_interruptible(device->waitqueue_sync, atomic_read(&device->wait_sync) == FLAG_SET);
     atomic_set(&device->wait_sync, FLAG_CLR);
 
     mutex_unlock(&device->sync_lock);
@@ -806,7 +783,7 @@ void p2p_move_notify(struct dma_buf_attachment *attach) {
     struct user_pages *tmp_entry;
 
     hash_for_each_possible(user_buff_map[device->id][ctid], tmp_entry, entry, vaddr_tmp) {
-        if(vaddr_tmp >= tmp_entry->vaddr && vaddr_tmp < tmp_entry->vaddr + tmp_entry->n_pages) {
+        if(vaddr_tmp >= tmp_entry->vaddr && vaddr_tmp <= tmp_entry->vaddr + tmp_entry->n_pages) {
             // Unmap any previous entry from TLB
             tlb_unmap_gup(device, tmp_entry, hpid);
 
@@ -1022,9 +999,8 @@ int p2p_detach_dma_buf(struct vfpga_dev *device, uint64_t vaddr, int32_t ctid, i
     pid_t hpid = device->pid_array[ctid];
 
     struct user_pages *tmp_entry;
-    struct hlist_node *tmp_next;
-    hash_for_each_possible_safe(user_buff_map[device->id][ctid], tmp_entry, tmp_next, entry, vaddr_tmp) {
-        if(vaddr_tmp >= tmp_entry->vaddr && vaddr_tmp < tmp_entry->vaddr + tmp_entry->n_pages) {
+    hash_for_each_possible(user_buff_map[device->id][ctid], tmp_entry, entry, vaddr_tmp) {
+        if(vaddr_tmp >= tmp_entry->vaddr && vaddr_tmp <= tmp_entry->vaddr + tmp_entry->n_pages) {
             // Unmap from TLB
             tlb_unmap_gup(device, tmp_entry, hpid);
         
@@ -1051,7 +1027,6 @@ int p2p_detach_dma_buf(struct vfpga_dev *device, uint64_t vaddr, int32_t ctid, i
             
             // Remove from map
             hash_del(&tmp_entry->entry);
-            kfree(tmp_entry);
         }
     }
     
