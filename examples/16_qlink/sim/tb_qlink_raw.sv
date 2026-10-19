@@ -54,10 +54,9 @@ module tb_qlink_raw;
                      : ((a_tx << (32-offset)) | (prev >> offset));
 
     logic [31:0] ptx_data; logic ptx_valid, ptx_last, ptx_ready;
-    logic [23:0] ptx_hdr, ptx_cks;
+    logic [31:0] ptx_hdr, ptx_cks;
     logic [31:0] prx_data; logic prx_valid, prx_eof, prx_sof, prx_err;
-    logic [23:0] prx_hdr, prx_cks;
-    logic [1:0]  prx_type;
+    logic [31:0] prx_hdr, prx_cks;
     logic        slide, aligned;
     logic [15:0] ber;
     logic [1:0]  dbg;
@@ -68,17 +67,21 @@ module tb_qlink_raw;
     // thing under test, the detection MECHANISM is, and it is identical at any
     // value. Tests 1 and 2 are unaffected: neither runs 64 consecutive cycles
     // without an ALIGN word once locked.
-    qlink_framer_raw #(.LOSS_COUNT(64)) u_framer (
+    // Phase A: PAYLOAD_WORDS overridden to 4 so the existing 4-word stimulus
+    // below keeps working; the production framer parameter is 14. The length
+    // is not the thing under test here — the alignment FSM and the
+    // header-and-trailer round-trip are.
+    qlink_framer_raw #(.LOSS_COUNT(64), .PAYLOAD_WORDS(4)) u_framer (
         .clk_tx(clk), .rstn_tx(rstn), .link_up_tx(1'b1),
         .phy_tx_data(ptx_data), .phy_tx_valid(ptx_valid),
         .phy_tx_last(ptx_last), .phy_tx_ready(ptx_ready),
-        .phy_tx_hdr(ptx_hdr), .phy_tx_cks(ptx_cks), .phy_tx_type(2'd0),
+        .phy_tx_hdr(ptx_hdr), .phy_tx_cks(ptx_cks),
         .gt_txdata(a_tx),
         .clk_rx(clk), .rstn_rx(rstn), .link_up_rx(1'b1),
         .phy_rx_data(prx_data), .phy_rx_valid(prx_valid),
         .phy_rx_eof(prx_eof), .phy_rx_err(prx_err),
         .phy_rx_hdr(prx_hdr), .phy_rx_sof(prx_sof),
-        .phy_rx_type(prx_type), .phy_rx_cks(prx_cks),
+        .phy_rx_cks(prx_cks),
         .gt_rxdata(b_rx), .rxslide(slide), .rx_aligned(aligned),
         .ber_count(ber), .dbg(dbg)
     );
@@ -132,8 +135,10 @@ module tb_qlink_raw;
 
     initial begin
         ptx_data = '0; ptx_valid = 0; ptx_last = 0;
-        ptx_hdr = 24'h000104;   // round=1, n_words=4
-        ptx_cks = 24'hABCDEF;
+        // Phase A: HDR and CKS are opaque 32-bit values at the framer boundary.
+        // The old n_words-in-HDR trick is gone — the framer knows PAYLOAD_WORDS.
+        ptx_hdr = 32'h12345678;
+        ptx_cks = 32'hABCDEF01;
         offset_load_en = 1'b0;
 
         $display("\n=== Test 1: aligner converges from all 32 bit offsets ===");
@@ -197,15 +202,15 @@ module tb_qlink_raw;
             end
             begin
                 wait (prx_sof === 1'b1);
-                if (prx_hdr !== 24'h000104)
-                    $display("  *** header wrong: got %06x want 000104", prx_hdr);
+                if (prx_hdr !== 32'h12345678)
+                    $display("  *** header wrong: got %08x want 12345678", prx_hdr);
                 else
-                    $display("  header OK: %06x", prx_hdr);
+                    $display("  header OK: %08x", prx_hdr);
                 wait (prx_eof === 1'b1);
-                if (prx_cks !== 24'hABCDEF)
-                    $display("  *** checksum wrong: got %06x", prx_cks);
+                if (prx_cks !== 32'hABCDEF01)
+                    $display("  *** checksum wrong: got %08x", prx_cks);
                 else
-                    $display("  checksum OK: %06x", prx_cks);
+                    $display("  checksum OK: %08x", prx_cks);
             end
         join
         repeat (20) @(posedge clk);

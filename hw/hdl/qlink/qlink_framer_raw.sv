@@ -34,11 +34,17 @@ module qlink_framer_raw #(
     //
     // The floor on this value is the longest gapless burst of frames the link
     // can legitimately carry, since a burst emits no ALIGN words either. 16384
-    // cycles is about 2730 back-to-back 6-cycle frames, which no real workload
-    // approaches -- QEC rounds are ~1 us apart and a frame is 6 cycles, so the
-    // line is idle over 99% of the time. Lower it in simulation to keep the
+    // cycles is about 2730 back-to-back frames, which no real workload
+    // approaches -- QEC rounds are ~1 us apart and a frame is 16 cycles, so the
+    // line is idle over 98% of the time. Lower it in simulation to keep the
     // recovery test short.
-    parameter int LOSS_COUNT = 16384
+    parameter int LOSS_COUNT = 16384,
+    // QLINK PROTOCOL v1.6 §3: frame is FIXED 64 bytes = HDR + PAYLOAD_WORDS +
+    // TRAILER on the wire. HDR carries the §3 header (TYPE/FLAGS/SRC/DST/EPOCH),
+    // TRAILER carries CRC-32. link_tx/link_rx present the 14 payload words
+    // (ROUND + 52 B payload) between them; the framer no longer learns frame
+    // length from the HDR word.
+    parameter int PAYLOAD_WORDS = 14
 ) (
     // ---- TX domain ----
     input  logic          clk_tx,
@@ -48,9 +54,12 @@ module qlink_framer_raw #(
     input  logic          phy_tx_valid,
     input  logic          phy_tx_last,
     output logic          phy_tx_ready,
-    input  logic [23:0]   phy_tx_hdr,
-    input  logic [23:0]   phy_tx_cks,
-    input  logic [1:0]    phy_tx_type,
+    // Full 32-bit protocol header (§3 bytes 0..3) and CRC-32 trailer (§3 bytes
+    // 60..63). These occupy their own wire slots -- NOT nested payload words --
+    // so a 64 B frame serializes in exactly 16 wire cycles, not 18. See
+    // qlink-protocol v1.6 §3.1.
+    input  logic [31:0]   phy_tx_hdr,
+    input  logic [31:0]   phy_tx_cks,
     output logic [31:0]   gt_txdata,
 
     // ---- RX domain ----
@@ -61,10 +70,9 @@ module qlink_framer_raw #(
     output logic          phy_rx_valid,
     output logic          phy_rx_eof,
     output logic          phy_rx_err,
-    output logic [23:0]   phy_rx_hdr,
+    output logic [31:0]   phy_rx_hdr,
     output logic          phy_rx_sof,
-    output logic [1:0]    phy_rx_type,
-    output logic [23:0]   phy_rx_cks,
+    output logic [31:0]   phy_rx_cks,
     input  logic [31:0]   gt_rxdata,
     output logic          rxslide,
     output logic          rx_aligned,
@@ -140,11 +148,15 @@ module qlink_framer_raw #(
     // W_ALIGN instead. The header is scrambled with scr_state == '1 -- the
     // value it is forced to throughout idle (see the always_ff below) --
     // which is exactly the state RX expects to descramble it with.
+    //
+    // Phase A: HDR and CKS are each a full 32-bit application-defined word.
+    // The TYPE sideband (and n_words-from-HDR) are gone -- TYPE sits in HDR
+    // and the frame length is fixed at PAYLOAD_WORDS, known on both sides.
     always_comb begin
         case (tx_state)
-            T_IDLE:  scr_in = {phy_tx_hdr, 6'b0, phy_tx_type};
+            T_IDLE:  scr_in = phy_tx_hdr;
             T_DATA:  scr_in = phy_tx_valid ? phy_tx_data : 32'h0;
-            T_EOF:   scr_in = {phy_tx_cks, 8'h00};
+            T_EOF:   scr_in = phy_tx_cks;
             default: scr_in = 32'h0;
         endcase
     end
@@ -309,18 +321,15 @@ module qlink_framer_raw #(
         for (int i = 0; i < 32; i++)
             rx_word_fast[i] = gt_rxdata[i] ^ des_state[57-i] ^ des_state[38-i];
 
-    // A corrupted header can decode to n_words == 0 (FIX 5, round 2): treated
-    // as a bad frame everywhere it matters, including here in the
-    // combinational sof strobe below, so a dropped bad header never produces
-    // a stray start-of-frame.
-    wire rx_hdr_bad = (rx_word_fast[15:8] == 8'd0);
-
+    // Phase A: frame length is fixed at PAYLOAD_WORDS and no longer carried in
+    // HDR, so there is no "n_words == 0" bad-header filter. A legitimate frame
+    // start is simply the first non-ALIGN word after R_IDLE; everything else
+    // (torn frames, bit-flipped HDR) is caught by the CRC-32 in link_rx.
     assign phy_rx_data  = rx_word_fast;
-    assign phy_rx_hdr   = rx_word_fast[31:8];
-    assign phy_rx_cks   = rx_word_fast[31:8];
-    assign phy_rx_type  = rx_word_fast[1:0];
+    assign phy_rx_hdr   = rx_word_fast;
+    assign phy_rx_cks   = rx_word_fast;
     assign phy_rx_valid = rstn_rx && link_up_rx && rx_aligned && (rx_state == R_PAY);
-    assign phy_rx_sof   = rstn_rx && link_up_rx && rx_aligned && (rx_state == R_IDLE) && !rx_is_align && !rx_hdr_bad;
+    assign phy_rx_sof   = rstn_rx && link_up_rx && rx_aligned && (rx_state == R_IDLE) && !rx_is_align;
     // phy_rx_eof does NOT genuinely need rx_word_fast -- unlike the header,
     // the trailer is located by COUNT (rx_left reaching zero, folded into
     // rx_state reaching R_TRAIL), not by CONTENT, so its correctness never
@@ -546,26 +555,14 @@ module qlink_framer_raw #(
                 case (rx_state)
                     R_IDLE: begin
                         if (!rx_is_align) begin
-                            // FIX 5: a corrupted header can decode to
-                            // n_words == 0. Trusting it would load rx_left
-                            // with 0, which underflows to 8'hFF on the very
-                            // first R_PAY cycle (rx_left <= rx_left - 1) and
-                            // floods 255 bogus phy_rx_valid words downstream.
-                            // Treat n_words == 0 as a bad frame: drop it and
-                            // stay in R_IDLE instead of entering R_PAY.
-                            if (des_out[15:8] == 8'd0) begin
-                                // Bad header -- do nothing, remain in R_IDLE.
-                                // rx_hdr_bad (above) keeps phy_rx_sof from
-                                // strobing for it.
-                            end else begin
-                                // First non-ALIGN word is the header. The
-                                // combinational phy_rx_hdr/phy_rx_type/
-                                // phy_rx_sof above already reflect it this
-                                // same cycle; only the state that must
-                                // persist into R_PAY is registered here.
-                                rx_left  <= des_out[15:8];
-                                rx_state <= R_PAY;
-                            end
+                            // Phase A: fixed frame length. First non-ALIGN
+                            // word is the HDR; load rx_left with the known
+                            // PAYLOAD_WORDS and head into R_PAY. The
+                            // combinational phy_rx_hdr / phy_rx_sof above
+                            // already reflect this cycle; only the state
+                            // that must persist into R_PAY is registered.
+                            rx_left  <= PAYLOAD_WORDS[7:0];
+                            rx_state <= R_PAY;
                         end
                     end
                     R_PAY: begin

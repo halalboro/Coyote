@@ -1,72 +1,72 @@
 /**
- * Coyote Example 16: QLINK — Bidirectional Rapid Anyon Interconnect for Decoders
+ * Coyote Example 16: QLINK — Phase A (QLink v1.6 §3)
  *
- * Coyote-side wrapper around the portable qlink_link protocol cores. Everything
- * Coyote-specific lives HERE; qlink_link_tx.sv / qlink_link_rx.sv stay free of
+ * Coyote-side wrapper around the portable qlink_link_tx / qlink_link_rx
+ * cores. Everything Coyote-specific lives HERE; the cores stay free of
  * Coyote types so they can be copied verbatim into a bare RFSoC project.
  *
  * =========================================================================
- * CLOCK DOMAINS -- read this before touching anything below.
+ * PHASE A — WHAT CHANGED FROM THE ORIGINAL BRAID/QLINK
  *
- * Since Task 2b the syndrome datapath does NOT run in aclk. It runs on the
- * transceiver's own clocks, which is the entire point: the two fabric CDC FIFOs
- * that used to bridge them were the largest known term in the latency budget.
+ *  * Frame is FIXED at 64 bytes (QLink v1.6 §3): HDR (TYPE/FLAGS/SRC/DST/
+ *    EPOCH, bytes 0..3) + ROUND (bytes 4..7) + PAYLOAD (52 B, bytes 8..59)
+ *    + CRC-32 (bytes 60..63). 14 payload words between the framer's HDR and
+ *    TRAILER words on the wire. SYN_WORDS/SPARSE/RX_GAPS are gone.
+ *  * TYPE field multiplexes four classes on the one lane: SYN=1, FRM=2,
+ *    FUS=3, CTL=4. Generator emits SYN; echo mode reflects as FRM; the
+ *    checker is type-agnostic.
+ *  * CRC-32 (IEEE 802.3) replaces the Fletcher-16 trailer.
+ *  * The 2-bit TYPE sideband at the framer boundary is gone — TYPE sits in
+ *    the HDR word now, so phy_tx_hdr / phy_tx_cks widen 24→32 bits.
  *
- *   aclk        400 MHz    AXI4-Lite CSR block ONLY
- *   qlink_tx_clk 257.8125 MHz  generator, qlink_link_tx, RTT counter
- *   qlink_rx_clk 257.8125 MHz  qlink_link_rx, checker  (RECOVERED from the peer)
+ * =========================================================================
+ * CLOCK DOMAINS — read this before touching anything below.
  *
- * qlink_tx_clk and qlink_rx_clk are the same nominal frequency but are NOT the
- * same clock: rx is recovered from the incoming serial stream and tracks the far
- * card's oscillator, so the two drift by up to a few hundred ppm. Every signal
- * that moves between the three domains below goes through an XPM macro. There
- * are no exceptions in this file, and adding one will not produce a warning.
+ *   aclk        400 MHz        AXI4-Lite CSR block ONLY
+ *   qlink_tx_clk 390.625 MHz   generator, qlink_link_tx, RTT counter
+ *   qlink_rx_clk 390.625 MHz   qlink_link_rx, checker  (RECOVERED from the peer)
  *
- * Counters cross with xpm_cdc_gray rather than being re-counted in aclk from
- * crossed pulses: gray cannot lose an increment, whereas a pulse crossing drops
- * events that arrive closer together than the synchroniser depth -- which
- * tx_dropped does exactly when the link is down and the generator is free-
- * running at INTERVAL=0.
+ * qlink_tx_clk and qlink_rx_clk are the same nominal frequency but are NOT
+ * the same clock: rx is recovered from the incoming serial stream and
+ * tracks the far card's oscillator, so the two drift by up to a few hundred
+ * ppm. Every signal that moves between the three domains below goes through
+ * an XPM macro. There are no exceptions in this file, and adding one will
+ * not produce a warning.
+ *
+ * Counters cross with xpm_cdc_gray rather than being re-counted in aclk
+ * from crossed pulses: gray cannot lose an increment.
  * =========================================================================
  *
- * A synthetic syndrome generator and a checker sit either side of the cores, so
- * a pair of cards can validate framing, checksums, round counting and gap
- * detection without any real QEC hardware attached.
+ * A synthetic 52 B payload generator and a checker sit either side of the
+ * cores, so a pair of cards can validate framing, CRC, round counting
+ * without any real QEC hardware attached.
  *
  * Register map (host CSR index = byte offset / 8):
- *   0  CTRL        RW : bit0=run generator, bit1=arm checker, bit2=clear counters,
- *                       bit3=echo received syndromes back, bit4=mark frames sparse
+ *   0  CTRL        RW : bit0=run, bit1=arm, bit2=clear, bit3=echo
  *   1  STATUS      RO : bit0=channel_up, bits[4:1]=PHY debug, bit5=link_up
  *   2  N_ROUNDS    RW : rounds to generate (0 = free-run until stopped)
- *   3  INTERVAL    RW : qlink_tx_clk cycles between generated rounds (NOT aclk)
+ *   3  INTERVAL    RW : qlink_tx_clk cycles between generated rounds
  *   4  TX_FRAMES   RO
  *   5  TX_DROPPED  RO : rounds offered while the link was busy or down
  *   6  RX_FRAMES   RO
- *   7  RX_ERRORS   RO : checksum / length / PHY errors
- *   8  RX_GAPS     RO : rounds that went missing
- *   9  RX_MISMATCH RO : payload did not match the expected pattern
- *   10 LAST_ROUND  RO : round number of the last good syndrome
- *   11 SYN_WORDS   RW : payload words per frame, 1..31
- *   12 RTT_CYCLES  RO : qlink_tx_clk cycles for the last echo (NOT aclk)
- *   13 LOOPBACK    RW : GT LOOPBACK[2:0], UG578. Latency decomposition tool --
- *                       000 normal, 010 near-end PMA, 110 far-end PMA. Changing
- *                       it resets the transceiver, so the link drops and comes
- *                       back; wait for STATUS again before measuring.
- *   14..15 SCRATCH RW
+ *   7  RX_ERRORS   RO : CRC / length / PHY errors (frame-level)
+ *   8  RX_MISMATCH RO : payload did not match the expected pattern
+ *   9  LAST_ROUND  RO : round number of the last good frame
+ *   10 LAST_TYPE   RO : §4 TYPE of the last good frame
+ *   11 RTT_CYCLES  RO : qlink_tx_clk cycles for the last echo
+ *   12 LOOPBACK    RW : GT LOOPBACK[2:0], UG578
+ *   13 SCRATCH     RW
+ *   14..15 reserved
  */
 
-// 992 bits = 31 words = 124 bytes maximum. The runtime SYN_WORDS register
-// selects how much of it is actually sent, so one bitstream can sweep syndrome
-// size -- i.e. code distance. d=11 is ~120 bits (4 words), d=25 ~624 (20 words).
-//
-// Why 31 words and not 32: echo mode has to carry {round, payload} across the
-// rx->tx boundary in ONE atomic transfer, and xpm_cdc_handshake tops out at
-// 1024 bits. 992 + 20 = 1012 fits; 1024 + 20 does not. Splitting it across two
-// handshakes would break atomicity, which is the only property that makes the
-// crossing correct at all.
-localparam int N_STAB = 992;    // MAXIMUM stabilizers per round
-localparam int N_CORR = 64;
-localparam int MAX_WORDS_SEL = N_STAB / 32;   // 31
+// 52 bytes = 416 bits of payload per frame.
+localparam int PAYLOAD_BITS = 416;
+
+// Protocol classes (§4). SYN upward, FRM downward, FUS lateral, CTL off-deadline.
+localparam logic [3:0] TYPE_SYN = 4'h1;
+localparam logic [3:0] TYPE_FRM = 4'h2;
+localparam logic [3:0] TYPE_FUS = 4'h3;
+localparam logic [3:0] TYPE_CTL = 4'h4;
 
 // =========================================================================
 // Constants and register map
@@ -84,13 +84,12 @@ localparam integer REG_TX_FRAMES   = 4;
 localparam integer REG_TX_DROPPED  = 5;
 localparam integer REG_RX_FRAMES   = 6;
 localparam integer REG_RX_ERRORS   = 7;
-localparam integer REG_RX_GAPS     = 8;
-localparam integer REG_RX_MISMATCH = 9;
-localparam integer REG_LAST_ROUND  = 10;
-localparam integer REG_SYN_WORDS   = 11;   // RW, payload words per frame
-localparam integer REG_RTT_CYCLES  = 12;   // RO, tx_clk cycles for the last echo
-localparam integer REG_LOOPBACK    = 13;   // RW, GT LOOPBACK[2:0]
-localparam integer REG_SCRATCH0    = 14;
+localparam integer REG_RX_MISMATCH = 8;
+localparam integer REG_LAST_ROUND  = 9;
+localparam integer REG_LAST_TYPE   = 10;
+localparam integer REG_RTT_CYCLES  = 11;
+localparam integer REG_LOOPBACK    = 12;
+localparam integer REG_SCRATCH0    = 13;
 
 // =========================================================================
 // Declarations -- aclk domain
@@ -105,8 +104,9 @@ logic                                  ctrl_reg_wren, ctrl_reg_rden;
 
 // Counter and status values after crossing back into aclk for the CSR reads.
 logic [31:0] tx_frames_a, tx_dropped_a;
-logic [31:0] rx_frames_a, rx_errors_a, rx_gaps_a, rx_mismatch_a;
+logic [31:0] rx_frames_a, rx_errors_a, rx_mismatch_a;
 logic [31:0] rtt_cycles_a, last_round_a;
+logic [3:0]  last_type_a;
 
 wire tclk  = qlink_tx_clk;
 wire rclk  = qlink_rx_clk;
@@ -116,18 +116,7 @@ wire rrstn = qlink_rx_rstn;
 wire run       = ctrl_reg[REG_CTRL][0];
 wire arm       = ctrl_reg[REG_CTRL][1];
 wire clr       = ctrl_reg[REG_CTRL][2];
-// These two were missing for one build. Verilog's implicit-net rule turned the
-// undeclared identifiers into undriven 1-bit wires reading 0, so it SYNTHESISED
-// CLEANLY while echo mode could never engage and SYN_WORDS was ignored. Nothing
-// warned. If you add a control alias, declare it here.
-wire        echo_mode = ctrl_reg[REG_CTRL][3];
-// Marks outgoing frames as carrying a list of fired stabilizer positions rather
-// than a dense bitmap. NOTHING in this design interprets the payload either
-// way -- the flag exists so the far end knows what it received. Sparse is
-// cheaper purely because the host then sets SYN_WORDS lower for the same code
-// distance, and the link sends however many words it is told to.
-wire        sparse    = ctrl_reg[REG_CTRL][4];
-wire [7:0]  syn_words = ctrl_reg[REG_SYN_WORDS][7:0];
+wire echo_mode = ctrl_reg[REG_CTRL][3];
 wire [31:0] n_rounds  = ctrl_reg[REG_N_ROUNDS][31:0];
 wire [31:0] interval  = ctrl_reg[REG_INTERVAL][31:0];
 
@@ -137,7 +126,7 @@ assign qlink_loopback_sel = ctrl_reg[REG_LOOPBACK][2:0];
 wire [ADDR_MSB-1:0] wr_idx = axi_awaddr[ADDR_LSB+:ADDR_MSB];
 wire [ADDR_MSB-1:0] rd_idx = axi_araddr[ADDR_LSB+:ADDR_MSB];
 wire wr_allowed = (wr_idx == REG_CTRL) || (wr_idx == REG_N_ROUNDS) ||
-                  (wr_idx == REG_INTERVAL) || (wr_idx == REG_SYN_WORDS) ||
+                  (wr_idx == REG_INTERVAL) ||
                   (wr_idx == REG_LOOPBACK) || (wr_idx >= REG_SCRATCH0);
 
 // channel_up is already synchronised into aclk by qlink_gty_wrapper.
@@ -146,81 +135,66 @@ wire link_up_a = aurora_channel_up;
 // =========================================================================
 // Declarations -- qlink_tx_clk domain
 // =========================================================================
-logic [31:0] phy_tx_data;
-logic        phy_tx_valid, phy_tx_last, phy_tx_ready;
-logic [23:0] phy_tx_hdr, phy_tx_cks;
-logic [1:0]  phy_tx_type;
+logic [31:0]            phy_tx_data;
+logic                   phy_tx_valid, phy_tx_last, phy_tx_ready;
+logic [31:0]            phy_tx_hdr, phy_tx_cks;
 
-logic [N_STAB-1:0] syn_bits;
-logic              syn_valid;
-logic [N_CORR-1:0] corr_bits;
-logic              corr_valid;
-logic [31:0]       tx_frames, tx_dropped;
+logic [3:0]             tx_type_t, tx_flags_t;
+logic [7:0]             tx_src_t, tx_dst_t, tx_epoch_t;
+logic [31:0]            tx_round_t;
+logic [PAYLOAD_BITS-1:0] tx_payload_t;
+logic                   tx_valid_t;
+logic [31:0]            tx_frames, tx_dropped;
 
-logic [31:0] gen_timer, gen_count;
-logic [15:0] gen_round;
-// The round number presented to qlink_link_tx must be registered in the same
-// cycle as syn_bits. gen_round increments on that cycle too, so passing it
-// directly would stamp the frame with R+1 while carrying pattern(R).
-logic [15:0] gen_round_q;
+logic [31:0]            gen_timer, gen_count;
+logic [31:0]            gen_round, gen_round_q;
 
-logic [31:0] cyc_cnt, t_start, rtt_cycles;
-logic        t_start_v, rtt_new, rtt_ack;
+logic [31:0]            cyc_cnt, t_start, rtt_cycles;
+logic                   t_start_v, rtt_new, rtt_ack;
 
 // Control and configuration after crossing from aclk.
-logic        run_t, clr_t, echo_t, link_up_t, sparse_t;
-logic [31:0] n_rounds_t, interval_t;
-logic [7:0]  syn_words_t;
+logic                   run_t, clr_t, echo_t, link_up_t;
+logic [31:0]            n_rounds_t, interval_t;
 
-// Echo payload after crossing from qlink_rx_clk.
-logic              rx_event_t;
-logic [N_STAB+15:0] echo_word_t;
-logic [N_STAB-1:0] echo_bits;
-logic              echo_valid;
-logic [15:0]       echo_round;
+// Echoed payload after crossing from qlink_rx_clk.
+logic                   rx_event_t;
+logic [PAYLOAD_BITS+31:0] echo_word_t;    // {round[31:0], payload[415:0]}
+logic [PAYLOAD_BITS-1:0] echo_payload;
+logic                   echo_valid;
+logic [31:0]            echo_round;
 
 // =========================================================================
 // Declarations -- qlink_rx_clk domain
 // =========================================================================
-logic [31:0] phy_rx_data;
-logic        phy_rx_valid, phy_rx_eof, phy_rx_err, phy_rx_sof;
-logic [1:0]  phy_rx_type;
-logic [23:0] phy_rx_hdr, phy_rx_cks;
+logic [31:0]             phy_rx_data;
+logic                    phy_rx_valid, phy_rx_eof, phy_rx_err, phy_rx_sof;
+logic [31:0]             phy_rx_hdr, phy_rx_cks;
 
-logic [N_STAB-1:0] syn_out_bits;
-logic              syn_out_valid, syn_out_gap, syn_out_bad, syn_out_sparse;
-logic [31:0]       syn_out_round;
-logic [N_CORR-1:0] corr_out_bits;
-logic              corr_out_valid;
-logic [31:0]       rx_frames, rx_errors, rx_gaps;
+logic                    rx_valid, rx_bad;
+logic [3:0]              rx_type, rx_flags;
+logic [7:0]              rx_src, rx_dst, rx_epoch;
+logic [31:0]             rx_round;
+logic [PAYLOAD_BITS-1:0] rx_payload;
+logic [31:0]             rx_frames, rx_errors;
 
-logic [31:0] rx_mismatch, last_round;
-logic        last_round_new, last_round_ack, echo_busy;
+logic [31:0]             rx_mismatch, last_round;
+logic [3:0]              last_type;
+logic                    last_round_new, last_round_ack, echo_busy;
 
-logic        arm_r, clr_r, link_up_r;
-logic [7:0]  syn_words_r;
+logic                    arm_r, clr_r, link_up_r;
 
-// Masks off the words beyond the current payload length.
-// Clamped: an out-of-range value would underflow the shift below and produce
-// an all-zero mask, which reads as "everything matches".
-wire [7:0] active_words = (syn_words_r == 8'd0 || syn_words_r > MAX_WORDS_SEL[7:0])
-                        ? MAX_WORDS_SEL[7:0] : syn_words_r;
-wire [N_STAB-1:0] word_mask = ({N_STAB{1'b1}} >> (N_STAB - {active_words, 5'b0}));
-
-// Deterministic pattern both ends compute independently from the round number,
-// so the checker needs no side channel to know what to expect.
-function automatic logic [N_STAB-1:0] pattern(input logic [15:0] r);
-    logic [N_STAB+31:0] p;
-    for (int k = 0; k <= (N_STAB/32); k++)
-        p[k*32 +: 32] = {16'b0, r} ^ (32'h9E3779B9 * (k + 1));
-    return p[N_STAB-1:0];
+// Deterministic pattern both ends compute independently from the round
+// number, so the checker needs no side channel to know what to expect.
+// 416 bits of pseudo-random payload keyed by the 32-bit round.
+function automatic logic [PAYLOAD_BITS-1:0] pattern(input logic [31:0] r);
+    logic [PAYLOAD_BITS+31:0] p;
+    for (int k = 0; k <= (PAYLOAD_BITS/32); k++)
+        p[k*32 +: 32] = r ^ (32'h9E3779B9 * (k + 1));
+    return p[PAYLOAD_BITS-1:0];
 endfunction
 
 // =========================================================================
-// AXI4-Lite slave (canonical Coyote structure -- see
-// examples/07_perf_fpga/hw/src/hdl/perf_fpga_axi_ctrl_parser.sv).
-// Do NOT hand-roll this: sampling wdata anywhere other than the AW+W handshake
-// cycle silently drops every host write.
+// AXI4-Lite slave (canonical Coyote structure).
 // =========================================================================
 assign ctrl_reg_wren = axi_wready && axi_ctrl.wvalid && axi_awready && axi_ctrl.awvalid;
 assign ctrl_reg_rden = axi_arready && axi_ctrl.arvalid && !axi_rvalid;
@@ -242,9 +216,9 @@ always_ff @(posedge aclk) begin
             REG_TX_DROPPED:  axi_rdata <= {32'b0, tx_dropped_a};
             REG_RX_FRAMES:   axi_rdata <= {32'b0, rx_frames_a};
             REG_RX_ERRORS:   axi_rdata <= {32'b0, rx_errors_a};
-            REG_RX_GAPS:     axi_rdata <= {32'b0, rx_gaps_a};
             REG_RX_MISMATCH: axi_rdata <= {32'b0, rx_mismatch_a};
             REG_LAST_ROUND:  axi_rdata <= {32'b0, last_round_a};
+            REG_LAST_TYPE:   axi_rdata <= {60'b0, last_type_a};
             REG_RTT_CYCLES:  axi_rdata <= {32'b0, rtt_cycles_a};
             default:         axi_rdata <= ctrl_reg[rd_idx];
         endcase
@@ -302,15 +276,10 @@ end
 
 // =========================================================================
 // CSR crossing layer: aclk -> GT domains
-//
-// N_ROUNDS, INTERVAL and SYN_WORDS are configuration, not data: they are
-// written by the host while the generator is stopped and are therefore stable
-// across the crossing. Writing them while RUN is asserted is a software bug
-// that will produce a torn value -- set them first, then set RUN.
 // =========================================================================
-xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(5))
-    inst_ctrl_tx (.src_clk(aclk), .src_in({sparse, link_up_a, echo_mode, clr, run}),
-                  .dest_clk(tclk), .dest_out({sparse_t, link_up_t, echo_t, clr_t, run_t}));
+xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(4))
+    inst_ctrl_tx (.src_clk(aclk), .src_in({link_up_a, echo_mode, clr, run}),
+                  .dest_clk(tclk), .dest_out({link_up_t, echo_t, clr_t, run_t}));
 
 xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(32))
     inst_nrnd_tx (.src_clk(aclk), .src_in(n_rounds),
@@ -320,27 +289,12 @@ xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(32))
     inst_intv_tx (.src_clk(aclk), .src_in(interval),
                   .dest_clk(tclk), .dest_out(interval_t));
 
-xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(8))
-    inst_swrd_tx (.src_clk(aclk), .src_in(syn_words),
-                  .dest_clk(tclk), .dest_out(syn_words_t));
-
 xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(3))
     inst_ctrl_rx (.src_clk(aclk), .src_in({link_up_a, clr, arm}),
                   .dest_clk(rclk), .dest_out({link_up_r, clr_r, arm_r}));
 
-xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(8))
-    inst_swrd_rx (.src_clk(aclk), .src_in(syn_words),
-                  .dest_clk(rclk), .dest_out(syn_words_r));
-
 // =========================================================================
 // CSR crossing layer: GT domains -> aclk
-//
-// Gray for anything that is a +1 counter, handshake for anything that is not.
-// A plain xpm_cdc_array_single on a 32-bit counter tears mid-count and produces
-// readings that never existed.
-//
-// SIM_LOSSLESS_GRAY_CHK is off because CLEAR jumps these counters straight to
-// zero, which is a legitimate multi-bit step the checker would flag.
 // =========================================================================
 xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
                .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
@@ -364,80 +318,53 @@ xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
 
 xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
                .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
-    inst_rxg_a (.src_clk(rclk), .src_in_bin(rx_gaps),
-                .dest_clk(aclk), .dest_out_bin(rx_gaps_a));
-
-xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
-               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
     inst_rxm_a (.src_clk(rclk), .src_in_bin(rx_mismatch),
                 .dest_clk(aclk), .dest_out_bin(rx_mismatch_a));
 
 // Not counters: an arbitrary 32-bit value that changes in one step.
-//
-// qlink_cdc_event presents dest_data only on the cycle dest_valid is high, so
-// both need a holding register in aclk for the CSR read mux to see. Those
-// registers are also where CLEAR takes effect for these two: the bench pulses
-// CLEAR and then polls RTT_CYCLES for a non-zero value as its completion
-// signal, so a stale value surviving a clear reads as an instant, wrong answer.
-// That exact bug already cost one debugging session.
-logic [31:0] rtt_cycles_x, last_round_x;
-logic        rtt_valid_a,  last_round_valid_a;
+logic [31:0] rtt_cycles_x;
+logic [35:0] last_x;        // {type[3:0], round[31:0]}
+logic        rtt_valid_a,  last_valid_a;
 
-// src_valid is a LEVEL for both, cleared by src_accept. A one-cycle pulse gets
-// discarded if the crossing happens to be busy, and for a status register the
-// consequence is not a lost sample but a PERMANENTLY stale one: the dropped
-// update is the last one there will ever be, so the host reads an old round
-// number or an old RTT forever and has no way to tell.
 qlink_cdc_event #(.WIDTH(32)) inst_rtt_a (
     .src_clk(tclk), .src_rstn(trstn), .src_valid(rtt_new), .src_data(rtt_cycles),
     .src_busy(), .src_accept(rtt_ack),
     .dest_clk(aclk), .dest_valid(rtt_valid_a), .dest_data(rtt_cycles_x)
 );
 
-qlink_cdc_event #(.WIDTH(32)) inst_lrnd_a (
-    .src_clk(rclk), .src_rstn(rrstn), .src_valid(last_round_new), .src_data(last_round),
+qlink_cdc_event #(.WIDTH(36)) inst_lrnd_a (
+    .src_clk(rclk), .src_rstn(rrstn), .src_valid(last_round_new),
+    .src_data({last_type, last_round}),
     .src_busy(), .src_accept(last_round_ack),
-    .dest_clk(aclk), .dest_valid(last_round_valid_a), .dest_data(last_round_x)
+    .dest_clk(aclk), .dest_valid(last_valid_a), .dest_data(last_x)
 );
 
 always_ff @(posedge aclk) begin
     if (!aresetn || clr) begin
         rtt_cycles_a <= '0;
         last_round_a <= '0;
+        last_type_a  <= '0;
     end else begin
-        if (rtt_valid_a)        rtt_cycles_a <= rtt_cycles_x;
-        if (last_round_valid_a) last_round_a <= last_round_x;
+        if (rtt_valid_a)  rtt_cycles_a <= rtt_cycles_x;
+        if (last_valid_a) begin
+            last_round_a <= last_x[31:0];
+            last_type_a  <= last_x[35:32];
+        end
     end
 end
 
 // =========================================================================
 // Echo crossing: qlink_rx_clk -> qlink_tx_clk
 //
-// The reflector cannot avoid this one. qlink_link_tx must be clocked by the
-// local transmit clock -- that is what the GT serialiser consumes -- so a
-// received syndrome has to change domain before it can go back out. It is the
-// ONLY crossing left on the syndrome path, down from four.
-//
-// It is deliberately unconditional rather than gated on echo mode, because the
-// measuring card needs the same event to stop its RTT counter, and taking both
-// from one transfer guarantees the timestamp and the payload refer to the same
-// round.
-//
-// COST, measured in sim/tb_qlink_cdc.sv rather than assumed: 16.4-18.9 ns,
-// mean 18.1. A round trip contains TWO of them -- one on the reflector turning
-// the frame around, one on the measurer stopping its counter -- so subtract
-// ~36 ns from any reported RTT to get the figure the real system would see.
-// The real decoder consumes syndromes in the receive domain and pays neither.
+// Carries {round[31:0], payload[415:0]} = 448 bits, well within
+// xpm_cdc_handshake's 1024-bit cap. The reflector cannot avoid this crossing:
+// qlink_link_tx must be clocked by the local TX clock to feed the GT.
 // =========================================================================
-// A pulse is correct HERE, unlike the two status crossings above: a syndrome
-// that cannot be reflected immediately is stale, and re-offering it later would
-// send the decoder an old round dressed up as a current one. Dropping is the
-// policy everywhere else in QLINK for the same reason.
-qlink_cdc_event #(.WIDTH(N_STAB + 16)) inst_echo_cdc (
+qlink_cdc_event #(.WIDTH(PAYLOAD_BITS + 32)) inst_echo_cdc (
     .src_clk    (rclk),
     .src_rstn   (rrstn),
-    .src_valid  (syn_out_valid),
-    .src_data   ({syn_out_round[15:0], syn_out_bits}),
+    .src_valid  (rx_valid),
+    .src_data   ({rx_round, rx_payload}),
     .src_busy   (echo_busy),
     .src_accept (),
     .dest_clk   (tclk),
@@ -447,39 +374,73 @@ qlink_cdc_event #(.WIDTH(N_STAB + 16)) inst_echo_cdc (
 
 always_ff @(posedge tclk) begin
     if (!trstn) begin
-        echo_bits  <= '0;
-        echo_valid <= 1'b0;
-        echo_round <= '0;
+        echo_payload <= '0;
+        echo_valid   <= 1'b0;
+        echo_round   <= '0;
     end else begin
         echo_valid <= echo_t && rx_event_t;
         if (rx_event_t) begin
-            echo_bits  <= echo_word_t[N_STAB-1:0];
-            echo_round <= echo_word_t[N_STAB+15:N_STAB];
+            echo_payload <= echo_word_t[PAYLOAD_BITS-1:0];
+            echo_round   <= echo_word_t[PAYLOAD_BITS+31:PAYLOAD_BITS];
         end
     end
 end
 
 // =========================================================================
-// Synthetic syndrome generator -- qlink_tx_clk
+// Synthetic frame generator -- qlink_tx_clk
+//
+// Emits a SYN frame every INTERVAL cycles. In echo mode the frame content
+// comes from the reflected echo instead, retagged as FRM. Fields:
+//   TYPE   SYN (generator) or FRM (echo)
+//   FLAGS  0 (open-item: assign bits later)
+//   SRC/DST  0 (single-link bench)
+//   EPOCH  0 (static)
+//   ROUND  32-bit counter from the generator
+//   PAYLOAD pattern(round)
 // =========================================================================
 always_ff @(posedge tclk) begin
     if (!trstn || !run_t) begin
-        gen_timer   <= '0;
-        gen_count   <= '0;
-        gen_round   <= '0;
-        gen_round_q <= '0;
-        syn_valid   <= 1'b0;
-        syn_bits    <= '0;
+        gen_timer    <= '0;
+        gen_count    <= '0;
+        gen_round    <= '0;
+        gen_round_q  <= '0;
+        tx_valid_t   <= 1'b0;
+        tx_payload_t <= '0;
+        tx_round_t   <= '0;
+        tx_type_t    <= TYPE_SYN;
+        tx_flags_t   <= 4'h0;
+        tx_src_t     <= 8'h00;
+        tx_dst_t     <= 8'h00;
+        tx_epoch_t   <= 8'h00;
     end else begin
-        syn_valid <= 1'b0;
-        if (link_up_t && (n_rounds_t == 0 || gen_count < n_rounds_t)) begin
+        tx_valid_t <= 1'b0;
+        if (echo_t) begin
+            // Reflector: reflect whatever just arrived, as FRM.
+            if (echo_valid) begin
+                tx_payload_t <= echo_payload;
+                tx_round_t   <= echo_round;
+                tx_type_t    <= TYPE_FRM;
+                tx_flags_t   <= 4'h0;
+                tx_src_t     <= 8'h00;
+                tx_dst_t     <= 8'h00;
+                tx_epoch_t   <= 8'h00;
+                tx_valid_t   <= 1'b1;
+            end
+        end else if (link_up_t && (n_rounds_t == 0 || gen_count < n_rounds_t)) begin
+            // Originator: emit SYN at the configured cadence.
             if (gen_timer >= interval_t) begin
-                gen_timer   <= '0;
-                syn_bits    <= pattern(gen_round);
-                gen_round_q <= gen_round;          // must match syn_bits
-                syn_valid   <= 1'b1;
-                gen_round   <= gen_round + 16'd1;
-                gen_count   <= gen_count + 32'd1;
+                gen_timer    <= '0;
+                tx_payload_t <= pattern(gen_round);
+                tx_round_t   <= gen_round;
+                gen_round_q  <= gen_round;
+                tx_type_t    <= TYPE_SYN;
+                tx_flags_t   <= 4'h0;
+                tx_src_t     <= 8'h00;
+                tx_dst_t     <= 8'h00;
+                tx_epoch_t   <= 8'h00;
+                tx_valid_t   <= 1'b1;
+                gen_round    <= gen_round + 32'd1;
+                gen_count    <= gen_count + 32'd1;
             end else begin
                 gen_timer <= gen_timer + 32'd1;
             end
@@ -487,18 +448,12 @@ always_ff @(posedge tclk) begin
     end
 end
 
-// Corrections are not exercised by the generator yet; tie off cleanly.
-assign corr_bits  = '0;
-assign corr_valid = 1'b0;
-
 // =========================================================================
 // Latency measurement -- qlink_tx_clk
 //
-// Single outstanding round: the host sends one, waits for the echo, reads the
-// result. t_start is taken when the round leaves, and the delta when the echo
-// of that same round returns. Both timestamps come from this card's transmit
-// clock, so no clock sync between hosts is needed -- but note the units are
-// tx_clk cycles (3.879 ns), NOT aclk cycles. The host converts.
+// Single outstanding round: fire, wait for the echo, read the result.
+// t_start is sampled when the round leaves; the delta is the RTT in tx_clk
+// cycles (2.56 ns each at 390.625 MHz). The host converts.
 // =========================================================================
 always_ff @(posedge tclk) begin
     if (!trstn) cyc_cnt <= '0;
@@ -513,13 +468,13 @@ always_ff @(posedge tclk) begin
         rtt_new    <= 1'b0;
     end else begin
         if (rtt_ack) rtt_new <= 1'b0;
-        // A locally generated round leaves: start the clock. Not armed in echo
-        // mode, where this card is the reflector rather than the measurer.
-        if (syn_valid && !echo_t) begin
+        // Outbound SYN leaves (not armed in echo mode: this card is the
+        // reflector, not the measurer).
+        if (tx_valid_t && !echo_t) begin
             t_start   <= cyc_cnt;
             t_start_v <= 1'b1;
         end
-        // Its echo comes back.
+        // Its echo returns via the RX-to-TX crossing.
         if (rx_event_t && t_start_v && !echo_t) begin
             rtt_cycles <= cyc_cnt - t_start;
             rtt_new    <= 1'b1;
@@ -530,21 +485,29 @@ end
 
 // =========================================================================
 // Checker -- qlink_rx_clk
+//
+// Type-agnostic: on any arriving frame, compare the payload against
+// pattern(round). The echo path reflects the generator's payload unchanged
+// (just retagged as FRM), so the pattern-vs-round relationship holds for
+// both SYN (direct peer send) and FRM (echoed back from the reflector).
+//
+// Phase-A plain comparison for the round counter: no modular arithmetic
+// (Phase B's job) and no gap counting yet. Wraps are extremely rare at
+// 32-bit / 1 us (71 min).
 // =========================================================================
 always_ff @(posedge rclk) begin
     if (!rrstn || !arm_r || clr_r) begin
         rx_mismatch    <= '0;
         last_round     <= '0;
+        last_type      <= '0;
         last_round_new <= 1'b0;
     end else begin
         if (last_round_ack) last_round_new <= 1'b0;
-        if (syn_out_valid) begin
-            last_round     <= syn_out_round;
+        if (rx_valid) begin
+            last_round     <= rx_round;
+            last_type      <= rx_type;
             last_round_new <= 1'b1;
-            // Compare only the words actually transmitted. With a runtime
-            // payload length the upper bits of syn_out_bits are stale from a
-            // previous, longer frame and would read as mismatches.
-            if ((syn_out_bits & word_mask) != (pattern(syn_out_round[15:0]) & word_mask))
+            if (rx_payload != pattern(rx_round))
                 rx_mismatch <= rx_mismatch + 32'd1;
         end
     end
@@ -553,43 +516,39 @@ end
 // =========================================================================
 // QLINK protocol cores
 // =========================================================================
-qlink_link_tx #(.N_STAB(N_STAB), .N_CORR(N_CORR)) inst_qlink_tx (
+qlink_link_tx inst_qlink_tx (
     .clk(tclk), .rstn(trstn), .link_up(link_up_t), .clr(clr_t),
-    .syn_bits(echo_t ? echo_bits  : syn_bits),
-    .syn_valid(echo_t ? echo_valid : syn_valid),
-    .syn_round(echo_t ? echo_round : gen_round_q),
-    .syn_words_sel(syn_words_t),
-    .corr_bits(corr_bits), .corr_valid(corr_valid),
+    .tx_type(tx_type_t), .tx_flags(tx_flags_t),
+    .tx_src(tx_src_t), .tx_dst(tx_dst_t), .tx_epoch(tx_epoch_t),
+    .tx_round(tx_round_t), .tx_payload(tx_payload_t),
+    .tx_valid(tx_valid_t),
     .phy_tx_data(phy_tx_data), .phy_tx_valid(phy_tx_valid),
     .phy_tx_last(phy_tx_last), .phy_tx_ready(phy_tx_ready),
-    .phy_tx_hdr(phy_tx_hdr), .phy_tx_cks(phy_tx_cks), .phy_tx_type(phy_tx_type),
-    .syn_sparse(sparse_t),
+    .phy_tx_hdr(phy_tx_hdr), .phy_tx_cks(phy_tx_cks),
     .tx_frames(tx_frames), .tx_dropped(tx_dropped)
 );
 
-qlink_link_rx #(.N_STAB(N_STAB), .N_CORR(N_CORR)) inst_qlink_rx (
+qlink_link_rx inst_qlink_rx (
     .clk(rclk), .rstn(rrstn), .link_up(link_up_r), .clr(clr_r),
-    .syn_out_bits(syn_out_bits), .syn_out_valid(syn_out_valid),
-    .syn_out_round(syn_out_round), .syn_out_gap(syn_out_gap),
-    .corr_out_bits(corr_out_bits), .corr_out_valid(corr_out_valid),
+    .rx_valid(rx_valid), .rx_bad(rx_bad),
+    .rx_type(rx_type), .rx_flags(rx_flags),
+    .rx_src(rx_src), .rx_dst(rx_dst), .rx_epoch(rx_epoch),
+    .rx_round(rx_round), .rx_payload(rx_payload),
     .phy_rx_data(phy_rx_data), .phy_rx_valid(phy_rx_valid),
-    .phy_rx_eof(phy_rx_eof), .phy_rx_err(phy_rx_err), .syn_out_bad(syn_out_bad),
-    .phy_rx_sof(phy_rx_sof), .phy_rx_hdr(phy_rx_hdr),
-    .phy_rx_type(phy_rx_type), .phy_rx_cks(phy_rx_cks), .syn_out_sparse(syn_out_sparse),
-    .rx_frames(rx_frames), .rx_errors(rx_errors), .rx_gaps(rx_gaps)
+    .phy_rx_eof(phy_rx_eof), .phy_rx_err(phy_rx_err),
+    .phy_rx_sof(phy_rx_sof),
+    .phy_rx_hdr(phy_rx_hdr), .phy_rx_cks(phy_rx_cks),
+    .rx_frames(rx_frames), .rx_errors(rx_errors)
 );
 
-// The shell routes the QLINK GTY PHY out on the same 256-bit AXIS ports the
-// Aurora integration used -- but on the GT clocks, not aclk. The shim is pure
-// rewiring and therefore has no clock of its own.
 qlink_phy_shim inst_phy (
     .phy_tx_data(phy_tx_data), .phy_tx_valid(phy_tx_valid),
     .phy_tx_last(phy_tx_last), .phy_tx_ready(phy_tx_ready),
-    .phy_tx_hdr(phy_tx_hdr), .phy_tx_cks(phy_tx_cks), .phy_tx_type(phy_tx_type),
+    .phy_tx_hdr(phy_tx_hdr), .phy_tx_cks(phy_tx_cks),
     .phy_rx_data(phy_rx_data), .phy_rx_valid(phy_rx_valid),
     .phy_rx_eof(phy_rx_eof), .phy_rx_err(phy_rx_err),
     .phy_rx_hdr(phy_rx_hdr), .phy_rx_sof(phy_rx_sof),
-    .phy_rx_type(phy_rx_type), .phy_rx_cks(phy_rx_cks),
+    .phy_rx_cks(phy_rx_cks),
     .shl_tx_tdata(axis_aurora_tx.tdata), .shl_tx_tvalid(axis_aurora_tx.tvalid),
     .shl_tx_tlast(axis_aurora_tx.tlast), .shl_tx_tready(axis_aurora_tx.tready),
     .shl_rx_tdata(axis_aurora_rx.tdata), .shl_rx_tvalid(axis_aurora_rx.tvalid),

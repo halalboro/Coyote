@@ -89,11 +89,9 @@ module qlink_gty_wrapper #(
     logic [3:0]  phy_dbg;
     logic [31:0] phy_tx_data, phy_rx_data;
     logic        phy_tx_valid, phy_tx_last, phy_tx_ready;
-    logic [23:0] phy_tx_hdr, phy_tx_cks;
-    logic [1:0]  phy_tx_type;
+    logic [31:0] phy_tx_hdr, phy_tx_cks;
     logic        phy_rx_valid, phy_rx_eof, phy_rx_err, phy_rx_sof;
-    logic [1:0]  phy_rx_type;
-    logic [23:0] phy_rx_hdr, phy_rx_cks;
+    logic [31:0] phy_rx_hdr, phy_rx_cks;
 
     // A build-time loopback image ignores the runtime select entirely, so it
     // cannot be talked out of loopback by software.
@@ -119,15 +117,13 @@ module qlink_gty_wrapper #(
         .phy_tx_ready (phy_tx_ready),
         .phy_tx_hdr   (phy_tx_hdr),
         .phy_tx_cks   (phy_tx_cks),
-        .phy_tx_type  (phy_tx_type),
         .phy_rx_data  (phy_rx_data),
         .phy_rx_valid (phy_rx_valid),
         .phy_rx_eof   (phy_rx_eof),
         .phy_rx_err   (phy_rx_err),
         .phy_rx_hdr   (phy_rx_hdr),
-        .phy_rx_sof   (phy_rx_sof),
-        .phy_rx_type  (phy_rx_type),
         .phy_rx_cks   (phy_rx_cks),
+        .phy_rx_sof   (phy_rx_sof),
         .gt_refclk    (gt_refclk),
         .gt_rxp       (gt_rxp_in),
         .gt_rxn       (gt_rxn_in),
@@ -173,19 +169,18 @@ module qlink_gty_wrapper #(
     // ------------------------------------------- streams, no CDC anywhere
     // This is the entire point of Task 2b. Both used to run through a
     // packet-mode axis_data_fifo; both are now wire.
-    assign phy_tx_data      = s_qlink_tx.tdata[31:0];
-    assign phy_tx_hdr       = s_qlink_tx.tdata[55:32];
-    assign phy_tx_cks       = s_qlink_tx.tdata[79:56];
-    assign phy_tx_type      = s_qlink_tx.tdata[81:80];
-    assign phy_tx_valid     = s_qlink_tx.tvalid;
-    assign phy_tx_last      = s_qlink_tx.tlast;
+    // Phase A: HDR and CKS widen 24→32. TYPE sideband is gone (TYPE sits in
+    // HDR). Layout now matches qlink_phy_shim.
+    //   TX: [31:0] data  [63:32] hdr  [95:64] cks
+    //   RX: [31:0] data  [32] err  [64:33] hdr  [96:65] cks  [97] sof
+    assign phy_tx_data       = s_qlink_tx.tdata[31:0];
+    assign phy_tx_hdr        = s_qlink_tx.tdata[63:32];
+    assign phy_tx_cks        = s_qlink_tx.tdata[95:64];
+    assign phy_tx_valid      = s_qlink_tx.tvalid;
+    assign phy_tx_last       = s_qlink_tx.tlast;
     assign s_qlink_tx.tready = phy_tx_ready;
 
-    // [31:0] data  [32] err  [56:33] hdr  [80:57] cks  [82:81] type  [83] sof
-    // 84 bits used of 256. qlink_phy_shim must split it at exactly these
-    // offsets -- the RX side carries an err bit that the TX side does not, so
-    // the two layouts are NOT the same and cannot share constants.
-    assign m_qlink_rx.tdata  = {172'b0, phy_rx_sof, phy_rx_type, phy_rx_cks,
+    assign m_qlink_rx.tdata  = {158'b0, phy_rx_sof, phy_rx_cks,
                                 phy_rx_hdr, phy_rx_err, phy_rx_data};
     assign m_qlink_rx.tvalid = phy_rx_valid;
     // NOT AXI4-Stream semantics. tlast is an independent end-of-frame STROBE
