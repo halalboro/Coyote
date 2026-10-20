@@ -7,6 +7,7 @@
 #   tb_qlink_raw   qlink_framer_raw: aligner converges from all 32 bit offsets
 #   tb_qlink       protocol: framing, checksums, rounds, misalignment recovery
 #   tb_qlink_cdc   the clock crossing, at its real 1012-bit width
+#   tb_qlink_round modular 32-bit round comparator (survives ~71 min wrap)
 #   tb_qlink_sys   predicted one-way latency, 10.3125 vs 15.625 Gbps
 #
 # Run this before every bitgen. All three are seconds, a bitgen is hours.
@@ -22,6 +23,7 @@ GLBL="$XILINX_VIVADO/data/verilog/src/glbl.v"
 # port mismatches are an elaboration error.
 echo "########## lint_elab: does the design still connect together"
 xvlog -sv -L xpm -i ../hw/src lint_elab.sv \
+      ../hw/src/hdl/qlink_round_pkg.sv \
       ../hw/src/hdl/qlink_link_tx.sv \
       ../hw/src/hdl/qlink_link_rx.sv \
       ../hw/src/hdl/qlink_cdc_event.sv \
@@ -71,6 +73,12 @@ echo "########## tb_qlink_cdc: clock crossing"
 xvlog -sv -L xpm tb_qlink_cdc.sv ../hw/src/hdl/qlink_cdc_event.sv "$GLBL"
 xelab -debug typical -L xpm -L unisims_ver -timescale 1ns/1ps tb_qlink_cdc glbl -s tb_cdc
 xsim tb_cdc -R
+
+echo
+echo "########## tb_qlink_round: 32-bit modular round arithmetic"
+xvlog -sv ../hw/src/hdl/qlink_round_pkg.sv tb_qlink_round.sv
+xelab -debug typical -timescale 1ns/1ps tb_qlink_round -s tb_round
+xsim tb_round -R
 
 echo
 echo "########## tb_qlink_sys: system latency model"
