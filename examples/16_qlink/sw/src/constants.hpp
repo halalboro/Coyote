@@ -41,6 +41,12 @@ constexpr uint32_t CAL_CTRL    = 14;   // W: pulse bits; R: status
 constexpr uint32_t CAL_D       = 15;   // RO, tx_clk cycles (active one-way D)
 constexpr uint32_t CAL_D_SHADOW = 16;  // RO, last measured D (not yet committed)
 constexpr uint32_t RETRAIN_CNT = 17;   // RO, monotonic re-train event counter
+// Phase D: slot schedule + barrier
+constexpr uint32_t RX_IN_ORDER = 18;   // RO, non-TICK frames at expected round
+constexpr uint32_t RX_STALE    = 19;   // RO, round < expected (modular)
+constexpr uint32_t RX_FUTURE   = 20;   // RO, round > expected (modular)
+constexpr uint32_t RX_MISSED   = 21;   // RO, barrier-close erasures + skipped
+constexpr uint32_t EXPECTED    = 22;   // RO, current expected_round
 }
 
 namespace ctrl {

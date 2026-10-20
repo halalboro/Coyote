@@ -56,7 +56,12 @@ static void print_counters(coyote::cThread& t) {
               << " mismatches="  << t.getCSR(reg::RX_MISMATCH) << "\n"
               << "  last_round=" << t.getCSR(reg::LAST_ROUND)
               << " last_type="   << type_name(static_cast<uint8_t>(last_type))
-              << " (" << last_type << ")\n";
+              << " (" << last_type << ")\n"
+              << "  sched: in_order=" << t.getCSR(reg::RX_IN_ORDER)
+              << " stale="            << t.getCSR(reg::RX_STALE)
+              << " future="           << t.getCSR(reg::RX_FUTURE)
+              << " missed="           << t.getCSR(reg::RX_MISSED)
+              << " expected="         << t.getCSR(reg::EXPECTED) << "\n";
 }
 
 // Phase C: print the TICK calibration + retrain state. ns_per_cycle lets
@@ -140,14 +145,18 @@ static int judge(coyote::cThread& t) {
     print_counters(t);
     uint64_t frames = t.getCSR(reg::RX_FRAMES);
     uint64_t bad    = t.getCSR(reg::RX_ERRORS) + t.getCSR(reg::RX_MISMATCH);
-    if (frames && !bad) {
+    uint64_t missed = t.getCSR(reg::RX_MISSED);
+    if (frames && !bad && !missed) {
         std::cout << "*** PASS: " << frames
-                  << " frames, no errors or mismatches ***\n";
+                  << " frames, no errors / mismatches / barrier misses ***\n";
         return 0;
     }
     if (!frames) {
         std::cout << "No frames received.\n";
         print_phy_dbg(t.getCSR(reg::STATUS));
+    } else if (missed) {
+        std::cout << "Frames arrived but " << missed
+                  << " barrier erasure(s) counted.\n";
     }
     std::cout << "*** FAIL ***\n";
     return 1;

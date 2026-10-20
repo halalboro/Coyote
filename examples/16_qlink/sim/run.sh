@@ -9,6 +9,7 @@
 #   tb_qlink_cdc   the clock crossing, at its real 1012-bit width
 #   tb_qlink_round modular 32-bit round comparator (survives ~71 min wrap)
 #   tb_qlink_tick  TICK calibration FSM + retrain sticky bit (Phase C)
+#   tb_qlink_sched RX scheduler + barrier (Phase D)
 #   tb_qlink_sys   predicted one-way latency, 10.3125 vs 15.625 Gbps
 #
 # Run this before every bitgen. All three are seconds, a bitgen is hours.
@@ -26,6 +27,7 @@ echo "########## lint_elab: does the design still connect together"
 xvlog -sv -L xpm -i ../hw/src lint_elab.sv \
       ../hw/src/hdl/qlink_round_pkg.sv \
       ../hw/src/hdl/qlink_tick_cal.sv \
+      ../hw/src/hdl/qlink_rx_sched.sv \
       ../hw/src/hdl/qlink_link_tx.sv \
       ../hw/src/hdl/qlink_link_rx.sv \
       ../hw/src/hdl/qlink_cdc_event.sv \
@@ -87,6 +89,12 @@ echo "########## tb_qlink_tick: TICK calibration FSM + retrain"
 xvlog -sv ../hw/src/hdl/qlink_tick_cal.sv tb_qlink_tick.sv
 xelab -debug typical -timescale 1ns/1ps tb_qlink_tick -s tb_tick
 xsim tb_tick -R
+
+echo
+echo "########## tb_qlink_sched: RX scheduler + barrier"
+xvlog -sv ../hw/src/hdl/qlink_round_pkg.sv ../hw/src/hdl/qlink_rx_sched.sv tb_qlink_sched.sv
+xelab -debug typical -timescale 1ns/1ps tb_qlink_sched -s tb_sched
+xsim tb_sched -R
 
 echo
 echo "########## tb_qlink_sys: system latency model"

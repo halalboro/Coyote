@@ -1,6 +1,6 @@
 /**
- * Coyote Example 16: QLINK — Phase C adds TICK calibration + re-train
- * dirty bit on top of the Phase A §3 framing.
+ * Coyote Example 16: QLINK — Phase D adds a minimal slot schedule and
+ * a barrier timer on top of Phase C's TICK calibration.
  *
  * Coyote-side wrapper around the portable qlink_link_tx / qlink_link_rx
  * cores. Everything Coyote-specific lives HERE; the cores stay free of
@@ -77,7 +77,12 @@
  *   15 CAL_D       RO : one-way delay D in tx_clk cycles (active)
  *   16 CAL_D_SHADOW RO: last measured D, not yet committed
  *   17 RETRAIN_CNT RO : monotonic re-train event counter
- *   18..31 reserved
+ *   18 RX_IN_ORDER RO : non-TICK frames arriving at expected_round
+ *   19 RX_STALE    RO : non-TICK frames with round < expected (modular)
+ *   20 RX_FUTURE   RO : non-TICK frames with round > expected (modular)
+ *   21 RX_MISSED   RO : erasures at barrier close + skipped-round gaps
+ *   22 EXPECTED    RO : current expected_round (debug)
+ *   23..31 reserved
  */
 
 // 52 bytes = 416 bits of payload per frame.
@@ -101,11 +106,17 @@ localparam logic [3:0] FLAGS_TICK_ECHO  = 4'b0011;   // is_tick=1, is_echo=1
 // free of implementation assumptions downstream.
 localparam int T_PEER_CYCLES = 20;
 
-// Round-boundary period in tx_clk cycles. Phase C uses a free-running
-// decimator: cal_d_shadow commits to cal_d_active once every 2^10 ≈
-// 1024 cycles ≈ 2.6 µs at 390.625 MHz. Phase D replaces this with the
-// real slot schedule where the boundary is r₀.
-localparam int RB_PERIOD_LOG2 = 10;
+// Phase D slot schedule: an epoch is EPOCH_ROUNDS rounds, and r₀ is the
+// first fire of each epoch. For the minimal single-source single-slot
+// schedule, SYN fires once per round and the only interesting boundary
+// is the epoch wrap — that's when cal_d_shadow commits to cal_d_active.
+// Phase E can refine this with sub-slot scheduling.
+localparam int EPOCH_ROUNDS_LOG2 = 4;    // 16 rounds / epoch
+
+// RX barrier timeout in rx_clk cycles. With a 1 µs SYN cadence (391
+// cycles at 390.625 MHz) a two-slot wait is a conservative default:
+// tolerates one slot of skew without a false alarm.
+localparam int T_BAR_CYCLES = 1024;
 
 // =========================================================================
 // Constants and register map
@@ -133,6 +144,11 @@ localparam integer REG_CAL_CTRL    = 14;
 localparam integer REG_CAL_D       = 15;
 localparam integer REG_CAL_D_SHDW  = 16;
 localparam integer REG_RETRAIN_CNT = 17;
+localparam integer REG_RX_IN_ORDER = 18;
+localparam integer REG_RX_STALE    = 19;
+localparam integer REG_RX_FUTURE   = 20;
+localparam integer REG_RX_MISSED   = 21;
+localparam integer REG_EXPECTED    = 22;
 
 // =========================================================================
 // Declarations -- aclk domain
@@ -222,7 +238,6 @@ logic [31:0]            echo_round;
 logic                   trigger_cal_t;
 logic                   retrain_sticky_t;
 logic                   round_boundary_t;
-logic [RB_PERIOD_LOG2-1:0] rb_cnt;
 logic                   tx_tick_req_t;
 logic                   tx_tick_fire_t;
 logic [31:0]            tx_tick_cycle_t;
@@ -255,6 +270,14 @@ logic [31:0]             rx_frames, rx_errors;
 logic [31:0]             rx_mismatch, last_round;
 logic [3:0]              last_type;
 logic                    last_round_new, last_round_ack, echo_busy;
+
+// Phase D: RX scheduler outputs (rclk-side).
+logic [31:0]             expected_round_r;
+logic [31:0]             rx_in_order_r, rx_stale_r, rx_future_r, rx_missed_r;
+
+// Phase D: counter readouts after CDC to aclk.
+logic [31:0]             rx_in_order_a, rx_stale_a, rx_future_a, rx_missed_a;
+logic [31:0]             expected_round_a;
 
 logic                    arm_r, clr_r, link_up_r;
 
@@ -312,6 +335,11 @@ always_ff @(posedge aclk) begin
             REG_CAL_D:       axi_rdata <= {32'b0, cal_d_active_a};
             REG_CAL_D_SHDW:  axi_rdata <= {32'b0, cal_d_shadow_a};
             REG_RETRAIN_CNT: axi_rdata <= {32'b0, retrain_count_a};
+            REG_RX_IN_ORDER: axi_rdata <= {32'b0, rx_in_order_a};
+            REG_RX_STALE:    axi_rdata <= {32'b0, rx_stale_a};
+            REG_RX_FUTURE:   axi_rdata <= {32'b0, rx_future_a};
+            REG_RX_MISSED:   axi_rdata <= {32'b0, rx_missed_a};
+            REG_EXPECTED:    axi_rdata <= {32'b0, expected_round_a};
             default:         axi_rdata <= ctrl_reg[rd_idx];
         endcase
     end
@@ -496,6 +524,30 @@ xpm_cdc_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1))
     inst_tickq_a (.src_clk(tclk), .src_in(tx_tick_req_t),
                   .dest_clk(aclk), .dest_out(tx_tick_req_a));
 
+// Phase D: scheduler counter crossings (rclk -> aclk). Monotonic
+// counters go through xpm_cdc_gray; expected_round is not monotonic
+// (it can decrement when the host clears) so it rides the slower
+// quasi-static path.
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_rxio_a (.src_clk(rclk), .src_in_bin(rx_in_order_r),
+                 .dest_clk(aclk), .dest_out_bin(rx_in_order_a));
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_rxst_a (.src_clk(rclk), .src_in_bin(rx_stale_r),
+                 .dest_clk(aclk), .dest_out_bin(rx_stale_a));
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_rxft_a (.src_clk(rclk), .src_in_bin(rx_future_r),
+                 .dest_clk(aclk), .dest_out_bin(rx_future_a));
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_rxms_a (.src_clk(rclk), .src_in_bin(rx_missed_r),
+                 .dest_clk(aclk), .dest_out_bin(rx_missed_a));
+xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(32))
+    inst_exp_a (.src_clk(rclk), .src_in(expected_round_r),
+                .dest_clk(aclk), .dest_out(expected_round_a));
+
 // Not counters: an arbitrary 32-bit value that changes in one step.
 logic [31:0] rtt_cycles_x;
 logic [35:0] last_x;        // {type[3:0], round[31:0]}
@@ -603,22 +655,18 @@ qlink_cdc_event #(.WIDTH(32)) inst_tick_rx_echo_cdc (
 );
 
 // =========================================================================
-// Phase C: round boundary (tclk)
+// Phase D: slot schedule and round boundary (tclk)
 //
-// Free-running decimator for Phase C. The commit from CAL_D_SHADOW to
-// CAL_D fires once per period, giving the TICK FSM a deterministic
-// cadence at which a measured D takes effect. Phase D replaces this
-// with the real r₀ of the slot schedule.
+// Replaces the Phase C free-running decimator with an epoch-wrap
+// pulse tied to the generator. r₀ fires when the generator emits a
+// SYN whose round is a multiple of 2^EPOCH_ROUNDS_LOG2 — i.e., once
+// every EPOCH_ROUNDS rounds. This gives the TICK FSM a deterministic
+// commit cadence that lines up with the schedule, not with an
+// unrelated wall-clock timer.
 // =========================================================================
-always_ff @(posedge tclk) begin
-    if (!trstn) begin
-        rb_cnt           <= '0;
-        round_boundary_t <= 1'b0;
-    end else begin
-        rb_cnt           <= rb_cnt + 1;
-        round_boundary_t <= (rb_cnt == '1);
-    end
-end
+assign round_boundary_t = tx_valid_t && !echo_t &&
+                          (tx_type_t == TYPE_SYN) &&
+                          (gen_round_q[EPOCH_ROUNDS_LOG2-1:0] == '0);
 
 // =========================================================================
 // Phase C: TICK calibration FSM
@@ -817,6 +865,27 @@ always_ff @(posedge rclk) begin
         end
     end
 end
+
+// =========================================================================
+// Phase D: RX scheduler + barrier (rclk)
+//
+// First consumer of qlink_round_pkg. Classifies each non-TICK data
+// frame as in-order / stale / future, and closes a barrier
+// T_BAR_CYCLES after the last data arrival to count erasures.
+// The counters share arm_r/clr_r with the pattern checker.
+// =========================================================================
+qlink_rx_sched #(.T_BAR_CYCLES(T_BAR_CYCLES)) inst_rx_sched (
+    .clk           (rclk),
+    .rstn          (rrstn && arm_r),
+    .clr           (clr_r),
+    .rx_valid      (rx_data_valid),
+    .rx_round      (rx_round),
+    .expected_round(expected_round_r),
+    .rx_in_order   (rx_in_order_r),
+    .rx_stale      (rx_stale_r),
+    .rx_future     (rx_future_r),
+    .rx_missed     (rx_missed_r)
+);
 
 // =========================================================================
 // QLINK protocol cores
