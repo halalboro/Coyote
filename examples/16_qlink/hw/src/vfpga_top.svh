@@ -82,7 +82,14 @@
  *   20 RX_FUTURE   RO : non-TICK frames with round > expected (modular)
  *   21 RX_MISSED   RO : erasures at barrier close + skipped-round gaps
  *   22 EXPECTED    RO : current expected_round (debug)
- *   23..31 reserved
+ *   23 RX_SYN      RO : non-TICK §4 class counters (SYN only)
+ *   24 RX_FRM      RO : non-TICK §4 class counters (FRM only)
+ *   25 RX_FUS      RO : non-TICK §4 class counters (FUS only)
+ *   26 RX_CTL      RO : CTL class, including TICK (sanity cross-check)
+ *   27 RX_TRUNC    RO : W_CUTOFF consecutive barrier closes (hard cutoff)
+ *   28 FENCE_CNT   RO : scheduler epoch rollovers since clear
+ *   29 FENCE_BAD   RO : epochs that contained a skipped round
+ *   30..31 reserved
  */
 
 // 52 bytes = 416 bits of payload per frame.
@@ -149,6 +156,19 @@ localparam integer REG_RX_STALE    = 19;
 localparam integer REG_RX_FUTURE   = 20;
 localparam integer REG_RX_MISSED   = 21;
 localparam integer REG_EXPECTED    = 22;
+// Phase E: per-class counters + cutoff + fence stub
+localparam integer REG_RX_SYN      = 23;
+localparam integer REG_RX_FRM      = 24;
+localparam integer REG_RX_FUS      = 25;
+localparam integer REG_RX_CTL      = 26;
+localparam integer REG_RX_TRUNC    = 27;
+localparam integer REG_FENCE_CNT   = 28;
+localparam integer REG_FENCE_BAD   = 29;
+
+// Hard-cutoff and fence-epoch defaults. W_CUTOFF has to be chosen with
+// the open-items pass; 4 is a placeholder big enough to be rare under
+// correct behaviour and small enough to catch an outage in a Stim run.
+localparam int W_CUTOFF_SCHED = 4;
 
 // =========================================================================
 // Declarations -- aclk domain
@@ -275,9 +295,19 @@ logic                    last_round_new, last_round_ack, echo_busy;
 logic [31:0]             expected_round_r;
 logic [31:0]             rx_in_order_r, rx_stale_r, rx_future_r, rx_missed_r;
 
+// Phase E: scheduler cutoff + fence outputs (rclk-side).
+logic [31:0]             rx_truncated_r, fence_count_r, fence_bad_r;
+
+// Phase E: per-§4-class RX counters (rclk-side).
+logic [31:0]             rx_syn_r, rx_frm_r, rx_fus_r, rx_ctl_r;
+
 // Phase D: counter readouts after CDC to aclk.
 logic [31:0]             rx_in_order_a, rx_stale_a, rx_future_a, rx_missed_a;
 logic [31:0]             expected_round_a;
+
+// Phase E: cutoff + fence + per-class readouts after CDC to aclk.
+logic [31:0]             rx_truncated_a, fence_count_a, fence_bad_a;
+logic [31:0]             rx_syn_a, rx_frm_a, rx_fus_a, rx_ctl_a;
 
 logic                    arm_r, clr_r, link_up_r;
 
@@ -340,6 +370,13 @@ always_ff @(posedge aclk) begin
             REG_RX_FUTURE:   axi_rdata <= {32'b0, rx_future_a};
             REG_RX_MISSED:   axi_rdata <= {32'b0, rx_missed_a};
             REG_EXPECTED:    axi_rdata <= {32'b0, expected_round_a};
+            REG_RX_SYN:      axi_rdata <= {32'b0, rx_syn_a};
+            REG_RX_FRM:      axi_rdata <= {32'b0, rx_frm_a};
+            REG_RX_FUS:      axi_rdata <= {32'b0, rx_fus_a};
+            REG_RX_CTL:      axi_rdata <= {32'b0, rx_ctl_a};
+            REG_RX_TRUNC:    axi_rdata <= {32'b0, rx_truncated_a};
+            REG_FENCE_CNT:   axi_rdata <= {32'b0, fence_count_a};
+            REG_FENCE_BAD:   axi_rdata <= {32'b0, fence_bad_a};
             default:         axi_rdata <= ctrl_reg[rd_idx];
         endcase
     end
@@ -547,6 +584,39 @@ xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
 xpm_cdc_array_single #(.DEST_SYNC_FF(4), .SRC_INPUT_REG(1), .WIDTH(32))
     inst_exp_a (.src_clk(rclk), .src_in(expected_round_r),
                 .dest_clk(aclk), .dest_out(expected_round_a));
+
+// Phase E: cutoff / fence counters (monotonic → gray) + per-class
+// counters (monotonic → gray). All four §4 classes are counted
+// independently in rclk so a bytewise sanity check against RX_FRAMES
+// stays local and the host does not need to post-process TICKs.
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_rxtr_a (.src_clk(rclk), .src_in_bin(rx_truncated_r),
+                 .dest_clk(aclk), .dest_out_bin(rx_truncated_a));
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_fnc_a  (.src_clk(rclk), .src_in_bin(fence_count_r),
+                 .dest_clk(aclk), .dest_out_bin(fence_count_a));
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_fnbd_a (.src_clk(rclk), .src_in_bin(fence_bad_r),
+                 .dest_clk(aclk), .dest_out_bin(fence_bad_a));
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_rxsyn_a(.src_clk(rclk), .src_in_bin(rx_syn_r),
+                 .dest_clk(aclk), .dest_out_bin(rx_syn_a));
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_rxfrm_a(.src_clk(rclk), .src_in_bin(rx_frm_r),
+                 .dest_clk(aclk), .dest_out_bin(rx_frm_a));
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_rxfus_a(.src_clk(rclk), .src_in_bin(rx_fus_r),
+                 .dest_clk(aclk), .dest_out_bin(rx_fus_a));
+xpm_cdc_gray #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .REG_OUTPUT(1),
+               .SIM_ASSERT_CHK(0), .SIM_LOSSLESS_GRAY_CHK(0), .WIDTH(32))
+    inst_rxctl_a(.src_clk(rclk), .src_in_bin(rx_ctl_r),
+                 .dest_clk(aclk), .dest_out_bin(rx_ctl_a));
 
 // Not counters: an arbitrary 32-bit value that changes in one step.
 logic [31:0] rtt_cycles_x;
@@ -874,7 +944,11 @@ end
 // T_BAR_CYCLES after the last data arrival to count erasures.
 // The counters share arm_r/clr_r with the pattern checker.
 // =========================================================================
-qlink_rx_sched #(.T_BAR_CYCLES(T_BAR_CYCLES)) inst_rx_sched (
+qlink_rx_sched #(
+    .T_BAR_CYCLES     (T_BAR_CYCLES),
+    .W_CUTOFF         (W_CUTOFF_SCHED),
+    .EPOCH_ROUNDS_LOG2(EPOCH_ROUNDS_LOG2)
+) inst_rx_sched (
     .clk           (rclk),
     .rstn          (rrstn && arm_r),
     .clr           (clr_r),
@@ -884,8 +958,39 @@ qlink_rx_sched #(.T_BAR_CYCLES(T_BAR_CYCLES)) inst_rx_sched (
     .rx_in_order   (rx_in_order_r),
     .rx_stale      (rx_stale_r),
     .rx_future     (rx_future_r),
-    .rx_missed     (rx_missed_r)
+    .rx_missed     (rx_missed_r),
+    .rx_truncated  (rx_truncated_r),
+    .fence_count   (fence_count_r),
+    .fence_bad     (fence_bad_r)
 );
+
+// =========================================================================
+// Phase E: per-§4-class RX counters (rclk)
+//
+// Classifies every arriving frame (including TICK; see the data vs
+// control note below) by its TYPE and bumps the matching counter.
+// Lives next to the pattern checker so it shares arm_r / clr_r, and
+// sees the same unfiltered rx_valid — TICK traffic is counted in
+// RX_CTL for debuggability, since filtering TICK out of RX_CTL would
+// make the sum rx_syn + rx_frm + rx_fus + rx_ctl != rx_frames and
+// hide a dropped-TICK bug.
+// =========================================================================
+always_ff @(posedge rclk) begin
+    if (!rrstn || !arm_r || clr_r) begin
+        rx_syn_r <= '0;
+        rx_frm_r <= '0;
+        rx_fus_r <= '0;
+        rx_ctl_r <= '0;
+    end else if (rx_valid) begin
+        case (rx_type)
+            TYPE_SYN: rx_syn_r <= rx_syn_r + 32'd1;
+            TYPE_FRM: rx_frm_r <= rx_frm_r + 32'd1;
+            TYPE_FUS: rx_fus_r <= rx_fus_r + 32'd1;
+            TYPE_CTL: rx_ctl_r <= rx_ctl_r + 32'd1;
+            default:  ;  // bad TYPE is already counted in rx_errors
+        endcase
+    end
+end
 
 // =========================================================================
 // QLINK protocol cores

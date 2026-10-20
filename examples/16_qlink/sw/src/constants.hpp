@@ -47,6 +47,14 @@ constexpr uint32_t RX_STALE    = 19;   // RO, round < expected (modular)
 constexpr uint32_t RX_FUTURE   = 20;   // RO, round > expected (modular)
 constexpr uint32_t RX_MISSED   = 21;   // RO, barrier-close erasures + skipped
 constexpr uint32_t EXPECTED    = 22;   // RO, current expected_round
+// Phase E: per-class counters + cutoff + fence stub
+constexpr uint32_t RX_SYN      = 23;   // RO
+constexpr uint32_t RX_FRM      = 24;   // RO
+constexpr uint32_t RX_FUS      = 25;   // RO
+constexpr uint32_t RX_CTL      = 26;   // RO, includes TICK frames
+constexpr uint32_t RX_TRUNC    = 27;   // RO, consecutive-miss cutoff events
+constexpr uint32_t FENCE_CNT   = 28;   // RO, epoch rollovers since clear
+constexpr uint32_t FENCE_BAD   = 29;   // RO, epochs with a skipped round
 }
 
 namespace ctrl {

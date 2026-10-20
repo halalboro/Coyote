@@ -1,5 +1,5 @@
 /**
- * Coyote Example 16: QLINK — host app (Phase A + C)
+ * Coyote Example 16: QLINK — host app (Phase A/C/D/E)
  *
  * Usage:  sudo ./qlink <mode> [options]
  *
@@ -12,11 +12,14 @@
  *   status  print link and PHY diagnostics, changing nothing
  *   clock   measure the real tx_clk against the host clock
  *   cal     trigger a TICK calibration and report measured one-way D
+ *   fence   slow-decoder stub: arm, collect, report per-epoch health
  *
  * Race-free workflow:  'arm' on card A, 'send' on card B, 'report' on A.
  *
  * Phase-A frame is FIXED 64 bytes (QLink v1.6 §3): no --words sweep.
  * Phase-C adds the TICK calibration path and a re-train sticky bit.
+ * Phase-E adds per-class RX counters, a cutoff/truncation event, and
+ * a fence counter the slow decoder polls to decide epoch commits.
  */
 
 #include <algorithm>
@@ -61,7 +64,14 @@ static void print_counters(coyote::cThread& t) {
               << " stale="            << t.getCSR(reg::RX_STALE)
               << " future="           << t.getCSR(reg::RX_FUTURE)
               << " missed="           << t.getCSR(reg::RX_MISSED)
-              << " expected="         << t.getCSR(reg::EXPECTED) << "\n";
+              << " expected="         << t.getCSR(reg::EXPECTED) << "\n"
+              << "  class: syn="      << t.getCSR(reg::RX_SYN)
+              << " frm="              << t.getCSR(reg::RX_FRM)
+              << " fus="              << t.getCSR(reg::RX_FUS)
+              << " ctl="              << t.getCSR(reg::RX_CTL) << "\n"
+              << "  fence: epochs="   << t.getCSR(reg::FENCE_CNT)
+              << " dirty="            << t.getCSR(reg::FENCE_BAD)
+              << " truncated="        << t.getCSR(reg::RX_TRUNC) << "\n";
 }
 
 // Phase C: print the TICK calibration + retrain state. ns_per_cycle lets
@@ -143,17 +153,26 @@ static bool wait_link(coyote::cThread& t) {
 
 static int judge(coyote::cThread& t) {
     print_counters(t);
-    uint64_t frames = t.getCSR(reg::RX_FRAMES);
-    uint64_t bad    = t.getCSR(reg::RX_ERRORS) + t.getCSR(reg::RX_MISMATCH);
-    uint64_t missed = t.getCSR(reg::RX_MISSED);
-    if (frames && !bad && !missed) {
+    uint64_t frames    = t.getCSR(reg::RX_FRAMES);
+    uint64_t bad       = t.getCSR(reg::RX_ERRORS) + t.getCSR(reg::RX_MISMATCH);
+    uint64_t missed    = t.getCSR(reg::RX_MISSED);
+    uint64_t trunc     = t.getCSR(reg::RX_TRUNC);
+    uint64_t fence_bad = t.getCSR(reg::FENCE_BAD);
+    if (frames && !bad && !missed && !trunc && !fence_bad) {
         std::cout << "*** PASS: " << frames
-                  << " frames, no errors / mismatches / barrier misses ***\n";
+                  << " frames, no errors / mismatches / barrier misses "
+                     "/ truncations / dirty epochs ***\n";
         return 0;
     }
     if (!frames) {
         std::cout << "No frames received.\n";
         print_phy_dbg(t.getCSR(reg::STATUS));
+    } else if (trunc) {
+        std::cout << trunc << " hard-cutoff truncation event(s): the link lost "
+                  << "W_CUTOFF consecutive rounds without recovering.\n";
+    } else if (fence_bad) {
+        std::cout << fence_bad << " dirty epoch(s): a round was skipped in at "
+                     "least one commit window.\n";
     } else if (missed) {
         std::cout << "Frames arrived but " << missed
                   << " barrier erasure(s) counted.\n";
@@ -202,7 +221,8 @@ int main(int argc, char* argv[]) {
                   << "  bench   round-trip latency measurement (fixed 64 B frame)\n"
                   << "  status  print link and PHY diagnostics\n"
                   << "  clock   measure the real tx_clk against the host clock\n"
-                  << "  cal     trigger TICK calibration and report one-way D\n\n"
+                  << "  cal     trigger TICK calibration and report one-way D\n"
+                  << "  fence   slow-decoder stub: arm, collect, report fence health\n\n"
                   << "  Phase A: frame size is FIXED at 64 bytes (QLink v1.6 §3).\n"
                   << "  There is no --words sweep.\n\n"
                   << opts << "\n";
@@ -474,6 +494,50 @@ int main(int argc, char* argv[]) {
         }
         std::cout << "[OK] calibration complete\n";
         return 0;
+    }
+
+    if (mode == "fence") {
+        // Phase E slow-decoder stub. Arms the receiver and watches the
+        // fence_count / fence_bad / rx_truncated CSRs over wait_s seconds.
+        // Each "fence" is one epoch worth of expected rounds (16 at the
+        // current EPOCH_ROUNDS_LOG2=4). Clean epochs with no skipped
+        // rounds are the slow decoder's commit opportunities; dirty or
+        // truncated epochs are what it has to react to.
+        t.setCSR(ctrl::CLEAR, reg::CTRL);
+        t.setCSR(0, reg::CTRL);
+        t.setCSR(ctrl::ARM, reg::CTRL);
+        std::cout << "Fence watcher armed. Collecting for " << wait_s
+                  << "s — start the sender now (and the far side's "
+                     "'echo' if you want FRM back).\n";
+
+        uint64_t fence0 = t.getCSR(reg::FENCE_CNT);
+        uint64_t bad0   = t.getCSR(reg::FENCE_BAD);
+        uint64_t trunc0 = t.getCSR(reg::RX_TRUNC);
+        auto     t0     = std::chrono::steady_clock::now();
+
+        for (int i = 0; i < wait_s; i++) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            uint64_t ep = t.getCSR(reg::FENCE_CNT) - fence0;
+            uint64_t bd = t.getCSR(reg::FENCE_BAD) - bad0;
+            uint64_t tr = t.getCSR(reg::RX_TRUNC)  - trunc0;
+            std::cout << "  t+" << (i + 1) << "s"
+                      << "  epochs=" << ep
+                      << " dirty="   << bd
+                      << " trunc="   << tr << "\n";
+        }
+
+        auto     t1   = std::chrono::steady_clock::now();
+        double   secs = std::chrono::duration<double>(t1 - t0).count();
+        uint64_t ep   = t.getCSR(reg::FENCE_CNT) - fence0;
+        uint64_t bd   = t.getCSR(reg::FENCE_BAD) - bad0;
+        uint64_t tr   = t.getCSR(reg::RX_TRUNC)  - trunc0;
+
+        std::cout << "\nFence summary over " << secs << " s:\n"
+                  << "  epochs committed:  " << ep << "\n"
+                  << "  dirty epochs:      " << bd
+                  << (ep ? "  (" + std::to_string(100 * bd / ep) + "%)" : "") << "\n"
+                  << "  hard truncations:  " << tr << "\n";
+        return judge(t);
     }
 
     std::cerr << "Unknown mode '" << mode << "'. Try --help.\n";
