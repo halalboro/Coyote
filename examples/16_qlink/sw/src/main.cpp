@@ -1,5 +1,5 @@
 /**
- * Coyote Example 16: QLINK — host app (Phase A)
+ * Coyote Example 16: QLINK — host app (Phase A + C)
  *
  * Usage:  sudo ./qlink <mode> [options]
  *
@@ -11,10 +11,12 @@
  *   bench   round-trip latency measurement
  *   status  print link and PHY diagnostics, changing nothing
  *   clock   measure the real tx_clk against the host clock
+ *   cal     trigger a TICK calibration and report measured one-way D
  *
  * Race-free workflow:  'arm' on card A, 'send' on card B, 'report' on A.
  *
  * Phase-A frame is FIXED 64 bytes (QLink v1.6 §3): no --words sweep.
+ * Phase-C adds the TICK calibration path and a re-train sticky bit.
  */
 
 #include <algorithm>
@@ -55,6 +57,29 @@ static void print_counters(coyote::cThread& t) {
               << "  last_round=" << t.getCSR(reg::LAST_ROUND)
               << " last_type="   << type_name(static_cast<uint8_t>(last_type))
               << " (" << last_type << ")\n";
+}
+
+// Phase C: print the TICK calibration + retrain state. ns_per_cycle lets
+// the caller re-use the host-side tx_clk period estimate rather than
+// pulling TXCLK_MHZ in from constants here.
+static void print_cal(coyote::cThread& t, double ns_per_cycle) {
+    uint64_t c   = t.getCSR(reg::CAL_CTRL);
+    uint64_t d   = t.getCSR(reg::CAL_D);
+    uint64_t ds  = t.getCSR(reg::CAL_D_SHADOW);
+    uint64_t rc  = t.getCSR(reg::RETRAIN_CNT);
+
+    const char* state_name[] = {"IDLE", "SEND", "WAIT", "HOLD"};
+    uint64_t state = (c >> cal::STATE_LSB) & cal::STATE_MASK;
+
+    std::cout << "  cal_valid=" << ((c >> cal::VALID_BIT) & 1)
+              << "  retrain_sticky=" << ((c >> cal::RETRAIN_STICKY) & 1)
+              << "  state=" << state_name[state]
+              << "  retrain_count=" << rc << "\n"
+              << "  cal_d="        << d  << " cycles ("
+              << std::fixed << std::setprecision(1)
+              << (d  * ns_per_cycle) << " ns)"
+              << "  shadow=" << ds << " cycles ("
+              << (ds * ns_per_cycle) << " ns)\n";
 }
 
 // PHY diagnostics ride on the four wires that used to carry lane_up.
@@ -167,7 +192,8 @@ int main(int argc, char* argv[]) {
                   << "  echo    reflect received frames back, retagged as FRM\n"
                   << "  bench   round-trip latency measurement (fixed 64 B frame)\n"
                   << "  status  print link and PHY diagnostics\n"
-                  << "  clock   measure the real tx_clk against the host clock\n\n"
+                  << "  clock   measure the real tx_clk against the host clock\n"
+                  << "  cal     trigger TICK calibration and report one-way D\n\n"
                   << "  Phase A: frame size is FIXED at 64 bytes (QLink v1.6 §3).\n"
                   << "  There is no --words sweep.\n\n"
                   << opts << "\n";
@@ -194,6 +220,7 @@ int main(int argc, char* argv[]) {
                   << "  link_up=" << ((s >> status::LINK_UP) & 1) << "\n";
         print_phy_dbg(s);
         print_counters(t);
+        print_cal(t, 1000.0 / TXCLK_MHZ);
         return 0;
     }
 
@@ -408,6 +435,36 @@ int main(int argc, char* argv[]) {
             now = t.getCSR(reg::RX_FRAMES);
         }
         return judge(t);
+    }
+
+    if (mode == "cal") {
+        // Phase C: trigger a calibration and poll for cal_valid. The far
+        // side must be running 'echo' (or anything that echoes TICK probes
+        // — the vFPGA does that unconditionally when it sees a probe).
+        const double ns_per_cycle = 1000.0 / TXCLK_MHZ;
+
+        // Clear retrain sticky too: if the link just came up, retrain_sticky
+        // is set and the FSM will refuse to run. Trigger with both bits.
+        t.setCSR(cal::TRIGGER | cal::RETRAIN_CLR, reg::CAL_CTRL);
+        t.setCSR(0, reg::CAL_CTRL);
+
+        auto deadline = std::chrono::steady_clock::now()
+                      + std::chrono::milliseconds(cal::CAL_TIMEOUT_MS);
+        bool got_valid = false;
+        while (std::chrono::steady_clock::now() < deadline) {
+            uint64_t c = t.getCSR(reg::CAL_CTRL);
+            if ((c >> cal::VALID_BIT) & 1) { got_valid = true; break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        print_cal(t, ns_per_cycle);
+        if (!got_valid) {
+            std::cerr << "[FAIL] cal_valid did not come up within "
+                      << cal::CAL_TIMEOUT_MS << " ms. Is the far side echoing?\n";
+            return 1;
+        }
+        std::cout << "[OK] calibration complete\n";
+        return 0;
     }
 
     std::cerr << "Unknown mode '" << mode << "'. Try --help.\n";

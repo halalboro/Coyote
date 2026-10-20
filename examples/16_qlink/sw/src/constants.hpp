@@ -1,5 +1,5 @@
 /**
- * Coyote Example 16: QLINK — shared constants (Phase A)
+ * Coyote Example 16: QLINK — shared constants (Phase A + C)
  *
  * Mirrors the register map in hw/src/vfpga_top.svh. Nothing enforces that
  * at build time, so if you change one, change the other.
@@ -36,6 +36,11 @@ constexpr uint32_t LAST_TYPE   = 10;   // RO: §4 TYPE of last good frame
 constexpr uint32_t RTT_CYCLES  = 11;   // RO
 constexpr uint32_t LOOPBACK    = 12;   // RW
 constexpr uint32_t SCRATCH     = 13;
+// Phase C: TICK calibration + re-train (R15)
+constexpr uint32_t CAL_CTRL    = 14;   // W: pulse bits; R: status
+constexpr uint32_t CAL_D       = 15;   // RO, tx_clk cycles (active one-way D)
+constexpr uint32_t CAL_D_SHADOW = 16;  // RO, last measured D (not yet committed)
+constexpr uint32_t RETRAIN_CNT = 17;   // RO, monotonic re-train event counter
 }
 
 namespace ctrl {
@@ -67,6 +72,22 @@ constexpr uint8_t SYN = 1;
 constexpr uint8_t FRM = 2;
 constexpr uint8_t FUS = 3;
 constexpr uint8_t CTL = 4;
+}
+
+// Phase C: CAL_CTRL bits. Write-side bits pulse; read-side bits report
+// current status.
+namespace cal {
+constexpr uint64_t TRIGGER     = 1ULL << 0;  // W: start a new calibration
+constexpr uint64_t RETRAIN_CLR = 1ULL << 1;  // W: clear retrain_sticky
+// Read-side (overrides written values):
+constexpr int VALID_BIT        = 0;          // 1 = cal_d trustworthy
+constexpr int RETRAIN_STICKY   = 1;          // 1 = GT re-trained since clear
+constexpr int STATE_LSB        = 2;          // bits [3:2] = FSM state (0..3)
+constexpr int TICK_REQ_BIT     = 4;          // 1 = probe emission pending
+constexpr int STATE_MASK       = 0x3;
+// Short timeout for the host-side cal wait: at 1 µs frame cadence the
+// RTT is a few µs; 100 ms is a comfortable upper bound.
+constexpr int CAL_TIMEOUT_MS   = 100;
 }
 
 constexpr uint64_t DEFAULT_ROUNDS   = 100000;
