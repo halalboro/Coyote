@@ -52,9 +52,9 @@ Additional details on Coyote's features and internals can be found in the [docum
 ## Prerequisites
 - **Linux**: For the basic Coyote functionality, Linux >= 5 is sufficient. Coyote has been extensively tested with Linux 5.4, Linux 5.15, Linux 6.2 and Linux 6.8.
 - **CMake**: CMake >= 3.5 with support for C++17.
-- **FPGA**: Coyote supports the following FPGA platforms: AMD Alveo U55C, U250, U280 and, recently, V80 (currently without networking).
+- **FPGA**: Coyote supports the following FPGA platforms: AMD Alveo U55C, U200, U250, U280 and, recently, V80 (currently without networking).
 - **Vivado & Vitis**: 
-  - For UltraScale+ devices (U55c, U250, U280), Coyote requires Vivado 2022.1 or newer and has been tested extensively on all versions between 2022.1 and 2025.1. Prior versions should work but may require minor fixes. All network-related Coyote configurations are built using the UltraScale+ Integrated 100G Ethernet Subsystem, for which a valid license must be obtained.
+  - For UltraScale+ devices (U55c, U200, U250, U280), Coyote requires Vivado 2022.1 or newer and has been tested extensively on all versions between 2022.1 and 2025.1. Prior versions should work but may require minor fixes. All network-related Coyote configurations are built using the UltraScale+ Integrated 100G Ethernet Subsystem, for which a valid license must be obtained.
   - For Versal devices (V80), Coyote requires Vivado 2024.2 or newer and has been extensively tested with Vivado 2024.2 and 2025.1. When targetting the V80, it's also possible to use Vivado 2024.1 or 2023.2; however, due to Vivado-internal changes in design checkpoints, the entire design (including the static layer, must be regenerated). Additional minor changes may need to be applied due to differences in available IPs, PnR algorithms between Vivado versions etc. 
 
 Additional requirements for certain features (e.g. GPU peer-to-peer) are covered in the respective example covering the feature.
@@ -109,16 +109,40 @@ If you use Coyote, please cite us:
 
 and if you use Coyote's networking stack, BALBOA, please cite the following work:
 ```bibtex
-@misc{balboa,
-    title={RoCE BALBOA: Service-enhanced Data Center RDMA for SmartNICs}, 
-    author={Maximilian Jakob Heer and Benjamin Ramhorst and Yu Zhu and Luhao Liu and Zhiyi Hu and Jonas Dann and Gustavo Alonso},
-    year={2025},
-    eprint={2507.20412},
-    archivePrefix={arXiv},
-    primaryClass={cs.AR},
-    url={https://arxiv.org/abs/2507.20412}, 
+@inproceedings {balboa,
+    author = {Maximilian Jakob Heer and Benjamin Ramhorst and Yu Zhu and Luhao Liu and Zhiyi Hu and Jonas Dann and Gustavo Alonso},
+    title = {{RoCE} {BALBOA}: {Service-Enhanced} {RDMA} Offload Engine for Data Center {SmartNICs}},
+    booktitle = {20th USENIX Symposium on Operating Systems Design and Implementation (OSDI 26)},
+    year = {2026},
+    isbn = {978-1-939133-55-7},
+    address = {Seattle, WA},
+    pages = {1495--1512},
+    url = {https://www.usenix.org/conference/osdi26/presentation/heer},
+    publisher = {USENIX Association},
+    month = jul
 }
 ```
+
+and if you use Coyote's integration between GPU and FPGAs, Ropertoo, please cite the following work:
+```bibtex
+@inproceedings{ropertoo,
+    author = {Venere, Marco and Sorrentino, Giuseppe and Ramhorst, Benjamin and Heer, Maximilian Jakob and Petrica, Lucian and Korolija, Dario and Santambrogio, Marco D. and Conficconi, Davide and Alonso, Gustavo and O'Brien, Ken},
+    title = {RoPeerTo: A Datacenter-Scale Architecture for Peer-To-Peer DMA between GPUs and FPGAs},
+    year = {2026},
+    isbn = {9798400722127},
+    publisher = {Association for Computing Machinery},
+    address = {New York, NY, USA},
+    url = {https://doi.org/10.1145/3767295.3803620},
+    doi = {10.1145/3767295.3803620},
+    booktitle = {Proceedings of the 21st European Conference on Computer Systems},
+    pages = {1829–1846},
+    numpages = {18},
+    keywords = {peer-to-peer dma, direct memory access, heterogeneous systems},
+    location = {McEwan Hall/The University of Edinburgh, Edinburgh, Scotland UK},
+    series = {EUROSYS '26}
+}
+```
+
 # License
 Most of Coyote code is licensed under the terms in [LICENSE](https://github.com/fpgasystems/Coyote/blob/master/LICENSE.md), which corresponds to the MIT Licence.
 An exception to this is the Coyote device driver, which is open-sourced with the GPL v2 license. 

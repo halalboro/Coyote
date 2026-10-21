@@ -34,7 +34,7 @@ from io import StringIO
 from pathlib import Path
 from signal import Signals
 import threading
-from typing import List, Dict
+from typing import List, Dict, Optional
 import select
 import atexit
 
@@ -144,7 +144,8 @@ class VivadoRunner(metaclass=Singleton):
         self._ensure_initialized_state()
         # Setup logging
         self.logger = logging.getLogger("Vivado")
-        self.logger.addHandler(logging.StreamHandler(self.log_buffer))
+        self.log_handler = logging.StreamHandler(self.log_buffer)
+        self.logger.addHandler(self.log_handler)
         # Ensure proper termination
         atexit.register(self._terminate_vivado)
 
@@ -156,6 +157,8 @@ class VivadoRunner(metaclass=Singleton):
         self.project_open = False
         self.buffered_vivado_log = ""
         self.log_buffer = StringIO()
+        if hasattr(self, "log_handler"):
+            self.log_handler.setStream(self.log_buffer)
 
         # We need to emulate a tty for vivado to
         # output "Vivado%", so we can know when a
@@ -350,9 +353,18 @@ class VivadoRunner(metaclass=Singleton):
         # We could try the following to enable faster simulations (did not change anything for me):
         # set_property -name {xsim.compile.xvlog.more_options} -value {-d SIM_SPEED_UP} -objects [get_filesets sim_1]
 
-        # Ensure path ends in slash
-        if sim_dump_path != "" and not sim_dump_path.endswith("/"):
-            sim_dump_path += "/"
+        if sim_dump_path is not None:
+            if sim_dump_path != "" and not sim_dump_path.endswith("/"):
+                sim_dump_path += "/"
+
+            vcd_start = [
+                f"open_vcd {UNIT_TEST_FOLDER}/sim_dump.vcd",
+                f"log_vcd /tb_user/inst_DUT/{sim_dump_path}*",
+            ]
+            vcd_end = ["close_vcd"]
+        else:
+            vcd_start = []
+            vcd_end = []
 
         return self._run_commands(
             [
@@ -365,13 +377,11 @@ class VivadoRunner(metaclass=Singleton):
                 "launch_simulation -simset [get_filesets sim_1] -step simulate -mode behavioral",
                 # 2. Restart sim
                 "restart",
-                # Generate VCD dump for the simulation!
-                f"open_vcd {UNIT_TEST_FOLDER}/sim_dump.vcd",
-                f"log_vcd /tb_user/inst_DUT/{sim_dump_path}*",
-                f"run {simulation_time.get_simulation_time()};",
-                "close_vcd",
-                "close_sim",
-            ],
+            ]
+            + vcd_start
+            + [f"run {simulation_time.get_simulation_time()};"]
+            + vcd_end
+            + ["close_sim"],
             stop_event,
         )
 
@@ -402,6 +412,30 @@ class VivadoRunner(metaclass=Singleton):
         self.project_open = success
         return success
 
+    def _update_vfpga_top(self, vfpga_top_path: str) -> None:
+        """
+        Copies the given vfpga_top to SIM_TARGET_V_FPGA_TOP_FILE.
+
+        If its content changed and the project is already open, vivado is restarted:
+        Vivado caches the design hierarchy of an open project and launch_simulation keeps
+        using the hierarchy of the previous vfpga_top, even after update_compile_order or
+        re-adding the file. Modules only instantiated by the new vfpga_top would then not be
+        compiled ("Module <...> not found"). Opening the project in a fresh vivado forces a
+        new parse. (Re-opening the project in the same vivado can crash vivado after a
+        simulation ran.)
+        """
+        with open(vfpga_top_path, "r") as src_file:
+            content = src_file.read()
+
+        target_file = Path(SIM_TARGET_V_FPGA_TOP_FILE)
+        if target_file.is_file() and target_file.read_text() == content:
+            return
+
+        target_file.write_text(content)
+        if self.project_open:
+            self._terminate_vivado()
+            self._ensure_initialized_state()
+
     def _get_current_compilation_info(
         self, vfpga_top_path: str, defines: Dict[str, str]
     ):
@@ -417,10 +451,6 @@ class VivadoRunner(metaclass=Singleton):
         disable_randomization: bool,
         stop_event: threading.Event,
     ) -> bool:
-        # 1. Open the project (if not already open)
-        if not self._open_project(stop_event):
-            return False
-
         # Add defines for the randomization
         if not disable_randomization:
             defines["EN_RANDOMIZATION"] = "1"
@@ -429,14 +459,18 @@ class VivadoRunner(metaclass=Singleton):
         last_info = self._get_last_compile_info()
         current_info = self._get_current_compilation_info(vfpga_top_path, defines)
 
-        # 3. Recompile if needed
-        if current_info.requires_recompilation(last_info):
-            self.logger.info("Recompilation is required.")
+        recompile = current_info.requires_recompilation(last_info)
+        # Copy over the FPGA file. This needs to happen before the project is opened.
+        if recompile:
+            self._update_vfpga_top(vfpga_top_path)
 
-            # Copy over the FPGA file
-            with open(vfpga_top_path, "r") as src_file:
-                with open(SIM_TARGET_V_FPGA_TOP_FILE, "w") as target_file:
-                    target_file.write(src_file.read())
+        # Open the project (if not already open)
+        if not self._open_project(stop_event):
+            return False
+
+        # Recompile if needed
+        if recompile:
+            self.logger.info("Recompilation is required.")
 
             # Compile
             success = self._run_commands(
@@ -489,7 +523,7 @@ class VivadoRunner(metaclass=Singleton):
     def run_simulation(
         self,
         vfpga_top_replacement: str,
-        sim_dump_path: str,
+        sim_dump_path: Optional[str],
         simulation_time: SimulationTime,
         disable_randomization: bool,
         defines: Dict[str, str],
@@ -498,7 +532,8 @@ class VivadoRunner(metaclass=Singleton):
         """
         vfpga_top_replacement = Path to the vfpga_top to use for hte simulation
         sim_dump_path = The module path of what should be included in the vcd dump
-            e.g., "db_pipeline/inst_filter"
+            e.g., "db_pipeline/inst_filter". An empty string dumps all signals and None disables
+            the dump.
         simulation_time = The maximum time to run the simulation for, if it does not finish
             earlier. This time is set to prevent the simulation to run forever and needs
             to be increased for long-running tests with large/in-output as it determines

@@ -97,9 +97,7 @@ protected:
 	std::thread event_thread;
 
 	/// vFPGA config registers, if AVX is enabled, as implemented in cnfg_slave_avx.sv; used mainly for starting DMA commands
-	#ifdef EN_AVX
-	volatile __m256i *cnfg_reg_avx = { 0 };
-	#endif
+	volatile void *cnfg_reg_avx = { 0 };
 
 	/// vFPGA config registers, if AVX is disabled, as implemented in cnfg_slave.sv; used mainly for starting DMA commands
 	volatile uint64_t *cnfg_reg = { 0 };
@@ -130,7 +128,7 @@ protected:
 	int sockfd = { -1 };
 
 	/// Set to true if there is an active out-of-band connection to a remote node for this cThread
-	bool is_connected;
+	bool is_connected = { false };
 
 	/// Inter-process vFPGA lock, see lock() and unlock() functions for more details
 	boost::interprocess::named_mutex vlock;
@@ -138,11 +136,19 @@ protected:
 	/// Set to true if the vFPGA lock is acquired by this cThread; used to release the lock in the destructor
 	bool lock_acquired = { false };
 	
+	#ifdef EN_AVX
+	/// Typed accessor for cnfg_reg_avx (stored as an opaque pointer so EN_AVX does not affect the layout of cThread)
+	inline volatile __m256i* avxRegs() const { return reinterpret_cast<volatile __m256i*>(cnfg_reg_avx); }
+	#endif
+
 	/// Utility function, memory mapping all the vFPGA control registers and writeback regions
 	void mmapFpga();
 
 	/// Utility function, unmapping all the vFPGA control registers and writeback regions
 	void munmapFpga();
+
+	/// Utility function, closing the out-of-band connection and socket (if open) and marking the cThread as disconnected
+	void releaseConn();
 
 	/**
 	 * @brief Posts a DMA command to the vFPGA
