@@ -697,6 +697,12 @@ proc cr_bd_design_static { parentCell } {
     dict set r5_ps_pmc_config PS_M_AXI_LPD_DATA_WIDTH $cnfg(v80_r5_lpd_data_bits)
     dict set r5_ps_pmc_config PS_NUM_FABRIC_RESETS 1
     dict set r5_ps_pmc_config PS_USE_M_AXI_LPD 1
+    # r5_platform reaches the provider via M_AXI_LPD -> PL (SmartConnect/r5_scratch),
+    # NOT the LPD-NoC path (that is EN_AMC-only, R5 -> NoC -> DDR4). The base CIPS
+    # sets PS_USE_NOC_LPD_AXI0=1 but its axi_noc S03 port + connection are amc-gated,
+    # so leaving it on exposes an UNCONNECTED CIPS LPD_AXI_NOC_0 master that corrupts
+    # the shared CIPS<->NoC solution and breaks CPM/QDMA GND routing. Disable it.
+    dict set r5_ps_pmc_config PS_USE_NOC_LPD_AXI0 0
     set_property -dict [list \
       CONFIG.PS_PMC_CONFIG $r5_ps_pmc_config \
       CONFIG.PS_PMC_CONFIG_APPLIED {1} \

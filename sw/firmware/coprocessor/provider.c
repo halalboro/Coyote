@@ -153,7 +153,6 @@ enum cyt_provider_result cyt_provider_open(
     }
     if (version != CYT_PROVIDER_VERSION || (stream_shape & UINT32_C(0xff)) != 64u ||
         ((stream_shape >> 8u) & UINT32_C(0xff)) != 16u ||
-        ((stream_shape >> 16u) & UINT32_C(0xff)) != 64u ||
         ((stream_shape >> 24u) & UINT32_C(0xff)) != 6u) {
         return CYT_PROVIDER_ABI_MISMATCH;
     }

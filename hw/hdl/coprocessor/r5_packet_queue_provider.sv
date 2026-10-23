@@ -439,13 +439,23 @@ module r5_packet_queue_provider #(
                 REG_IDENTITY_BASE, REG_IDENTITY_BASE + 4, REG_IDENTITY_BASE + 8,
                 REG_IDENTITY_BASE + 12, REG_IDENTITY_BASE + 16, REG_IDENTITY_BASE + 20,
                 REG_IDENTITY_BASE + 24, REG_IDENTITY_BASE + 28: begin
-                    if (identity_valid || provider_selected) begin
+                    // Allow identity/ABI (re)writes whenever the host has NOT selected us.
+                    // Gating on provider_selected (not identity_valid) lets a restarted or
+                    // stuck firmware re-publish its identity and re-grant a generation;
+                    // safe because the host always re-reads endpoint_generation right
+                    // before binding.
+                    if (provider_selected) begin
                         write_result = RESULT_NOT_READY;
                     end
                 end
                 REG_IDENTITY_COMMIT: begin
                     write_opcode = CMD_IDENTITY;
-                    if (held_wdata != IDENTITY_COMMIT_MAGIC || identity_valid || provider_selected ||
+                    // Reject a re-commit only when the host has selected us (operational),
+                    // not merely because identity_valid is already set. This lets a
+                    // restarted/stuck firmware re-commit and re-grant the generation while
+                    // unselected, curing the open() dead-lock; the host re-reads the
+                    // generation immediately before binding, so a bumped generation is safe.
+                    if (held_wdata != IDENTITY_COMMIT_MAGIC || provider_selected ||
                         rx_count != 0 || tx_count != 0 || tx_stage_dirty || mmio_busy ||
                         runtime_abi == 0 || firmware_abi != EXPECTED_FIRMWARE_ABI ||
                         !firmware_identity_nonzero || (&endpoint_generation)) begin

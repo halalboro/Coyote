@@ -1,19 +1,19 @@
 /**
- * Coyote Example 15: AMC Ping — functional vFPGA (host loopback +1).
+ * Coyote Example 15: R5 Co-processor Provider — vFPGA body.
  *
- * A simple kernel so the vFPGA and the AMC can be exercised together in one
- * bitstream:
+ * Two independent datapaths in one region:
  *
- *   host memory  ->  vFPGA  ->  host memory
+ *   host memory  ->  perf_local (+1 per 32-bit word)  ->  host memory
+ *   R5 (master)  ->  coprocessor_slave (PING/INC/ADD/SUM + verdict MMIO)  ->  R5
  *
- * `perf_local` streams host data through the vFPGA and increments each 32-bit
- * word by 1, so the host can verify end-to-end that the vFPGA actually
- * processed the data (out[i] == in[i] + 1). The AMC runs independently on the
- * R5 and is reached over PCIe (BAR4 DDR window / GCQ mailbox) — the two share
- * the card but not the datapath, and coexist without interfering.
+ * The co-processor slave is driven by the R5 over the provider transport
+ * (axis_coprocessor_recv/send + s_axi_coprocessor_mmio). It also exposes the
+ * verdict register file, read-only, on the vFPGA control interface axi_ctrl so
+ * the host can read the R5's self-test result over BAR4.
  *
- * This example is host-stream only (EN_STRM=1, N_STRM_AXI=1, no card memory),
- * so only the host link is wired; everything else is tied off.
+ * Host-stream only (EN_STRM=1, N_STRM_AXI=1, no card memory); descriptors tied
+ * off. Binding (host <-> control target <-> R5) happens in the shell — this
+ * body just services the datapath.
  */
 
 import lynxTypes::*;
@@ -26,18 +26,15 @@ perf_local inst_host_link (
     .aresetn    (aresetn)
 );
 
-// On-card R5 <-> vFPGA channel through OCM (Example 15). ocm_mbx drives the
-// m_axi_ocm master (shell -> CIPS S_AXI_LPD -> OCM at 0xFFFF_F000) to run a
-// mailbox in OCM, and raises ocm_irq (-> pl_ps_irq1) to wake the R5. The R5
-// reads/writes the same OCM natively. See docs/superpowers/specs/2026-08-12-*.
-ocm_mbx #(
-    .OCM_BASE (64'h0000_0000_FFFF_F000),
-    .N_DATA   (32)
-) inst_ocm_mbx (
-    .aclk     (aclk),
-    .aresetn  (aresetn),
-    .m_axi    (m_axi_ocm),
-    .irq      (ocm_irq)
+// R5 <-> vFPGA co-processor slave over the provider transport. axi_ctrl gives
+// the host a read-only mirror of the verdict registers the R5 writes via MMIO.
+coprocessor_slave inst_coprocessor (
+    .aclk       (aclk),
+    .aresetn    (aresetn),
+    .axis_recv  (axis_coprocessor_recv[0]),
+    .axis_send  (axis_coprocessor_send[0]),
+    .axis_mmio  (s_axi_coprocessor_mmio[0]),
+    .axi_ctrl   (axi_ctrl)
 );
 
 // Tie off unused interfaces
@@ -46,4 +43,3 @@ always_comb sq_rd.tie_off_m();
 always_comb sq_wr.tie_off_m();
 always_comb cq_rd.tie_off_s();
 always_comb cq_wr.tie_off_s();
-always_comb axi_ctrl.tie_off_s();

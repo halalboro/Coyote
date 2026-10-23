@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+######################################################################################
+# Coyote AMC firmware build wrapper.
+#
+# Bridges Coyote's Vivado-emitted XSA into AVED's AMC build.sh and captures the
+# resulting amc.elf at a well-known location for fix_bif.py to include in the PDI.
+#
+# Inputs (positional):
+#   $1   absolute path to XSA emitted by Vivado (cyt_top.xsa)
+#   $2   absolute path where the built amc.elf should be deposited
+#
+# Environment (optional overrides):
+#   XILINX_VITIS  — Vitis install root. Default below points at rose.
+#   AMC_DIR       — Vendored AMC tree.  Default = @CYT_DIR@/fw/amc_v80.
+#
+# Generated from build_amc.sh.in by CMake when EN_AMC=1.
+# CMake substitutes @CYT_DIR@ (Coyote source root) at configure time.
+######################################################################################
+
+set -euo pipefail
+
+#-- Args -----------------------------------------------------------------------
+if [[ $# -ne 2 ]]; then
+    echo "Usage: $0 <xsa_path> <output_amc_elf_path>" >&2
+    exit 1
+fi
+
+XSA_PATH="$1"
+OUT_ELF="$2"
+
+if [[ ! -f "$XSA_PATH" ]]; then
+    echo "ERROR: XSA not found: $XSA_PATH" >&2
+    exit 1
+fi
+
+#-- Paths (CYT_DIR is @VAR@-substituted by CMake; Vitis path is rose-specific) -
+CYT_DIR_DEFAULT="@CYT_DIR@"
+CYT_DIR="${CYT_DIR:-$CYT_DIR_DEFAULT}"
+AMC_DIR="${AMC_DIR:-${CYT_DIR}/fw/amc_v80}"
+XILINX_VITIS="${XILINX_VITIS:-/share/xilinx/2025.1/Vitis}"
+VITIS_SETTINGS="${XILINX_VITIS}/settings64.sh"
+
+if [[ ! -d "$AMC_DIR" ]]; then
+    echo "ERROR: AMC source not found at $AMC_DIR" >&2
+    exit 1
+fi
+if [[ ! -f "$VITIS_SETTINGS" ]]; then
+    echo "ERROR: Vitis settings64.sh not found at $VITIS_SETTINGS" >&2
+    echo "       (override XILINX_VITIS to point at a working Vitis install)" >&2
+    exit 1
+fi
+
+#-- Source Vitis env (provides sdtgen, empyro, armr5-none-eabi-gcc) -----------
+echo "*** AMC build: sourcing Vitis env from $VITIS_SETTINGS"
+# shellcheck disable=SC1090
+source "$VITIS_SETTINGS"
+export XILINX_VITIS
+
+#-- Strip Vivado/Vitis lib paths from LD_LIBRARY_PATH so the system cmake on
+#   NixOS doesn't pick up Vivado's stale libstdc++.so.6 (missing GLIBCXX_3.4.32).
+#   Vitis tools themselves resolve their libs via RPATH, so dropping these
+#   entries from LD_LIBRARY_PATH doesn't break them.
+if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+    LD_LIBRARY_PATH=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' \
+        | grep -vE '/share/xilinx/.*/(Vivado|Vitis|Vitis_HLS)/' \
+        | paste -sd: -)
+    export LD_LIBRARY_PATH
+fi
+
+#-- Build AMC ------------------------------------------------------------------
+echo "*** AMC build: profile=v80 os=freertos10_xilinx xsa=$XSA_PATH"
+pushd "$AMC_DIR" > /dev/null
+
+# Always do a clean BSP regen to avoid stale-XSA issues. AMC's build.sh re-uses
+# amc_bsp/ if present; for first-cut bringup we always start fresh.
+rm -rf build amc_bsp .Xil .metadata .analytics IDE.log
+
+./scripts/build.sh \
+    -os freertos10_xilinx \
+    -profile v80 \
+    -xsa "$XSA_PATH"
+
+if [[ ! -f build/amc.elf ]]; then
+    echo "ERROR: AMC build completed but build/amc.elf not produced" >&2
+    popd > /dev/null
+    exit 1
+fi
+
+popd > /dev/null
+
+#-- Deposit at the requested location ------------------------------------------
+mkdir -p "$(dirname "$OUT_ELF")"
+cp -f "${AMC_DIR}/build/amc.elf" "$OUT_ELF"
+echo "*** AMC build complete: $OUT_ELF ($(stat -c %s "$OUT_ELF") bytes)"

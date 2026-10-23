@@ -150,7 +150,12 @@ module r5_coprocessor_provider_stack (
     logic mmio_idle;
     logic stale_response_fault;
 
-    r5_packet_queue_provider inst_backend (
+    // Buffer sizing overridden for V80 routability: the default 4x64x512-bit flop
+    // buffers (~260K FF) overcongest the shell. Single-beat packets need far less.
+    r5_packet_queue_provider #(
+        .QUEUE_DEPTH(2),
+        .MAX_PACKET_BEATS(4)
+    ) inst_backend (
         .aclk(aclk), .aresetn(aresetn),
         .provider_selected(provider_selected), .provider_quiesce(provider_quiesce),
         .provider_abort(provider_abort), .management_recover(management_recover),

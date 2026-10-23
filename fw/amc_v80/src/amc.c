@@ -95,20 +95,53 @@
 #define EN_OCM_SELFTEST               ( 1 )
 #endif
 #define OCM_MBX_BASE                  ( 0xFFFFF000u )
-#define OCM_OFF_C2V_SEQ               ( 0x00 )   /* R5   -> vFPGA doorbell        */
-#define OCM_OFF_OPCODE                ( 0x04 )   /* R5   : 1 = +1 over the window */
-#define OCM_OFF_N_WORDS               ( 0x08 )   /* R5   : payload length         */
-#define OCM_OFF_V2C_SEQ               ( 0x10 )   /* vFPGA: = C2V_SEQ when done     */
-#define OCM_OFF_RCODE                 ( 0x14 )   /* vFPGA: 0 ok, 1 bad op, 2 big   */
-#define OCM_OFF_OUT_WORDS             ( 0x18 )   /* vFPGA: words produced          */
-#define OCM_OFF_DATA                  ( 0x40 )   /* both : data window             */
+#define OCM_OFF_C2V_SEQ               ( 0x00 )   /* R5   -> vFPGA doorbell         */
+#define OCM_OFF_OPCODE                ( 0x04 )   /* R5   : 0 PING 1 INC 2 ADD 3 SUM*/
+#define OCM_OFF_N_WORDS               ( 0x08 )   /* R5   : payload length          */
+#define OCM_OFF_OPERAND               ( 0x0C )   /* R5   : scalar for ADD          */
+#define OCM_OFF_V2C_SEQ               ( 0x10 )   /* vFPGA: = C2V_SEQ when done      */
+#define OCM_OFF_RCODE                 ( 0x14 )   /* vFPGA: 0 ok, 1 bad op, 2 big    */
+#define OCM_OFF_OUT_WORDS             ( 0x18 )   /* vFPGA: words produced           */
+#define OCM_OFF_DATA                  ( 0x40 )   /* both : data window              */
+#define OCM_OP_PING                   ( 0 )
 #define OCM_OP_INC                    ( 1 )
-#define OCM_TEST_WORDS                ( 8 )
-#define OCM_WAIT_ITERS                ( 1000000u )  /* bounded spin on V2C_SEQ */
-/* Compact verdict mirror for the host, in the AMC DDR window (BAR4 0x0A000000 +
- * this offset). Top 64 KB of the 32 MB window, clear of AMC's shared mem @0x100000. */
+#define OCM_OP_ADD                    ( 2 )
+#define OCM_OP_SUM                    ( 3 )
+#define OCM_MAX_WORDS                 ( 32 )        /* must match ocm_mbx N_DATA    */
+#define OCM_WAIT_ITERS                ( 1000000u )  /* per-attempt spin on V2C_SEQ  */
+#define OCM_RETRIES                   ( 4 )         /* retry a timed-out submit     */
+#define OCM_WARMUP_MAX                ( 400 )       /* startup pings until channel up*/
+#define OCM_LAT_RUNS                  ( 64 )        /* round-trips for latency stats*/
+#define OCM_R5_MHZ                    ( 400 )       /* RPU clock for cyc->ns (approx)*/
+/* Compact verdict mirror for the host, in the AMC DDR window (BAR4 + AMC_DDR_OFFS
+ * + this offset; see driver/include/coyote_defs.h). Clear of AMC's shared mem
+ * @0x100000, and inside the window for both the 32 MB (EN_APU=0) and 256 MB
+ * (EN_APU=1) variants. */
 #define OCM_VERDICT_DDR               ( 0x01FF0000u )
 #define OCM_VERDICT_MAGIC             ( 0x4F434D54u )   /* "OCMT" */
+
+/* ---- Phase A0: mirror the A72 (APU) first-light handshake to the host ------ */
+/* The APU runs fw/apu_v80 out of OCM and publishes a magic + heartbeat at
+ * APU_HANDSHAKE_BASE. The host cannot see OCM (it is not in any BAR window), so
+ * the R5 -- which reaches OCM natively -- samples it and mirrors it into the DDR
+ * window the host already maps via the driver's MMAP_AMC region.
+ *
+ * Unlike the abandoned phase-1a axi_ctrl experiment, these reads cannot hang the
+ * core: OCM is R5-native LPD memory, not a route through the shell fabric.
+ * See docs/superpowers/specs/2026-08-18-a72-linux-vfpga-design.md */
+#ifndef EN_APU_FIRST_LIGHT_MIRROR
+#define EN_APU_FIRST_LIGHT_MIRROR     ( 1 )
+#endif
+#define APU_HANDSHAKE_BASE            ( 0xFFFD0000u )
+#define APU_HANDSHAKE_MAGIC           ( 0xA72F1157u )
+#define APU_OFF_MAGIC                 ( 0x00 )   /* APU: 0xA72F1157 once alive     */
+#define APU_OFF_BEAT                  ( 0x04 )   /* APU: free-running heartbeat    */
+#define APU_OFF_UART0                 ( 0x08 )   /* APU: chars accepted by UART0   */
+#define APU_OFF_UART1                 ( 0x0C )   /* APU: chars accepted by UART1   */
+#define APU_SAMPLE_GAP_ITERS          ( 20000000u ) /* spin between beat samples   */
+/* Verdict mirror, 64 KB below the OCM one, same DDR window. */
+#define APU_VERDICT_DDR               ( 0x01FE0000u )
+#define APU_VERDICT_MAGIC             ( 0x41505521u )   /* "APU!" */
 
 
 /******************************************************************************/
@@ -217,6 +250,15 @@ static void vTaskFuncMain( void );
  * @return  N/A
  */
 static void vOcmSelfTest( void );
+#endif
+
+#if ( 1 == EN_APU_FIRST_LIGHT_MIRROR )
+/**
+ * @brief   Sample the A72 first-light handshake in OCM and mirror it to DDR
+ *          so the host can observe whether the APU booted and is running.
+ * @return  N/A
+ */
+static void vApuFirstLightMirror( void );
 #endif
 
 /**
@@ -449,6 +491,11 @@ static void vTaskFuncMain( void )
     vOcmSelfTest();
 #endif
 
+#if ( 1 == EN_APU_FIRST_LIGHT_MIRROR )
+    /* Report whether the A72 partition booted beside us (phase A0). */
+    vApuFirstLightMirror();
+#endif
+
     FOREVER
     {
         iOSAL_Task_SleepMs( AMC_TASK_SLEEP_MS );
@@ -456,91 +503,228 @@ static void vTaskFuncMain( void )
 }
 
 #if ( 1 == EN_OCM_SELFTEST )
-/**
- * @brief   Post a "+1 over N words" request into the OCM mailbox, wait for the
- *          vFPGA to service it, verify the result, log PASS/FAIL and mirror a
- *          compact verdict to the host-visible AMC DDR window.
- */
-static void vOcmSelfTest( void )
+/* Cortex-R5 PMU cycle counter (PMCCNTR) for round-trip latency. R5 runs
+ * privileged so the CP15 PMU registers are accessible. */
+static inline void ocm_ccnt_init( void )
 {
-    uint32_t i, seq, v2c = 0, rc = 0xFFFFFFFF, mism = 0, ok = 1;
+    uint32_t v;
+    __asm volatile( "mrc p15, 0, %0, c9, c12, 0" : "=r"( v ) );  /* PMCR      */
+    v |= ( 1u << 0 ) | ( 1u << 2 );                              /* enable+reset */
+    __asm volatile( "mcr p15, 0, %0, c9, c12, 0" :: "r"( v ) );
+    __asm volatile( "mcr p15, 0, %0, c9, c12, 1" :: "r"( 1u << 31 ) ); /* PMCNTENSET: CCNT */
+}
+static inline uint32_t ocm_ccnt( void )
+{
+    uint32_t v;
+    __asm volatile( "mrc p15, 0, %0, c9, c13, 0" : "=r"( v ) );  /* PMCCNTR */
+    return v;
+}
 
-    PLL_LOG( AMC_NAME, "OCM self-test: start (mbx @ 0x%08X)\r\n", OCM_MBX_BASE );
+/**
+ * @brief   Submit one command over the OCM mailbox and wait for completion.
+ *
+ * Seeds the data window + command, rings the doorbell, and spins on V2C_SEQ.
+ * Retries a timed-out submit up to OCM_RETRIES (hardens the first-transaction-
+ * after-boot edge). Reports round-trip cost in R5 cycles and in poll iterations.
+ *
+ * @return  vFPGA RCODE, or 0xFFFFFFFF if every attempt timed out.
+ */
+static uint32_t ocm_submit( uint32_t opcode, uint32_t operand,
+                            const uint32_t *in, uint32_t n,
+                            uint32_t *out, uint32_t *out_n,
+                            uint32_t *cycles, uint32_t *iters, uint32_t *retries )
+{
+    uint32_t attempt, i, seq = 0, v2c = 0, it = 0, c0 = 0, c1 = 0;
 
-    /* Quiesce the header so any power-on garbage can't look like a request. */
-    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_OPCODE );
-    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_N_WORDS );
-    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_V2C_SEQ );
-    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_C2V_SEQ );
-
-    /* Seed the input window: DATA[i] = 0x100 + i. */
-    for( i = 0; i < OCM_TEST_WORDS; i++ )
+    for( attempt = 0; attempt < OCM_RETRIES; attempt++ )
     {
-        HAL_IO_WRITE32( 0x100 + i, OCM_MBX_BASE + OCM_OFF_DATA + ( i << 2 ) );
-    }
+        /* (Re)seed each attempt so a partially-serviced prior try can't corrupt. */
+        for( i = 0; i < n && i < OCM_MAX_WORDS; i++ )
+        {
+            HAL_IO_WRITE32( in[i], OCM_MBX_BASE + OCM_OFF_DATA + ( i << 2 ) );
+        }
+        HAL_IO_WRITE32( opcode,  OCM_MBX_BASE + OCM_OFF_OPCODE );
+        HAL_IO_WRITE32( n,       OCM_MBX_BASE + OCM_OFF_N_WORDS );
+        HAL_IO_WRITE32( operand, OCM_MBX_BASE + OCM_OFF_OPERAND );
 
-    /* Command, then doorbell last: the vFPGA latches the command on the edge. */
-    HAL_IO_WRITE32( OCM_OP_INC,     OCM_MBX_BASE + OCM_OFF_OPCODE );
-    HAL_IO_WRITE32( OCM_TEST_WORDS, OCM_MBX_BASE + OCM_OFF_N_WORDS );
-    seq = 1;
-    HAL_IO_WRITE32( seq, OCM_MBX_BASE + OCM_OFF_C2V_SEQ );
-
-    /* Bounded spin until the vFPGA publishes V2C_SEQ == seq. */
-    for( i = 0; i < OCM_WAIT_ITERS; i++ )
-    {
-        v2c = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_V2C_SEQ );
+        seq = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_V2C_SEQ ) + 1u;  /* next unused */
+        c0 = ocm_ccnt();
+        HAL_IO_WRITE32( seq, OCM_MBX_BASE + OCM_OFF_C2V_SEQ );       /* doorbell */
+        for( it = 0; it < OCM_WAIT_ITERS; it++ )
+        {
+            v2c = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_V2C_SEQ );
+            if( v2c == seq )
+            {
+                break;
+            }
+        }
+        c1 = ocm_ccnt();
         if( v2c == seq )
         {
             break;
         }
+        if( retries ) { ( *retries )++; }
     }
 
-    if( v2c != seq )
+    if( cycles ) { *cycles = c1 - c0; }
+    if( iters )  { *iters  = it; }
+    if( v2c != seq ) { return 0xFFFFFFFF; }
+
+    if( out_n ) { *out_n = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_OUT_WORDS ); }
+    if( out )
     {
-        PLL_ERR( AMC_NAME, "OCM self-test: TIMEOUT (V2C=0x%08X seq=0x%08X)\r\n", v2c, seq );
-        ok = 0;
-    }
-    else
-    {
-        rc = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_RCODE );
-        if( 0 != rc )
+        uint32_t on = out_n ? *out_n : 0;
+        for( i = 0; i < on && i < OCM_MAX_WORDS; i++ )
         {
-            PLL_ERR( AMC_NAME, "OCM self-test: vFPGA RCODE=0x%08X\r\n", rc );
-            ok = 0;
+            out[i] = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_DATA + ( i << 2 ) );
         }
-        for( i = 0; i < OCM_TEST_WORDS; i++ )
+    }
+    return HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_RCODE );
+}
+
+/**
+ * @brief   Exercise the OCM command ABI (PING/INC/ADD/SUM), measure round-trip
+ *          latency, and mirror a verdict to the host-visible AMC DDR window.
+ */
+static void vOcmSelfTest( void )
+{
+    uint32_t in[OCM_MAX_WORDS], out[OCM_MAX_WORDS], out_n, rc, i;
+    uint32_t passed = 0, first_fail = 0, retries = 0, cyc, it;
+    uint32_t lat_min = 0xFFFFFFFF, lat_max = 0, lat_sum = 0, it_min = 0xFFFFFFFF;
+
+    ocm_ccnt_init();
+    /* Quiesce the header so power-on garbage can't look like a request. */
+    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_V2C_SEQ );
+    HAL_IO_WRITE32( 0, OCM_MBX_BASE + OCM_OFF_C2V_SEQ );
+
+    /* Warm-up handshake: the vFPGA's ocm_mbx blocks on its first S_AXI_LPD read
+     * until the CIPS LPD path is up after PS boot (its AXI engine has no timeout).
+     * Ping until it answers so the real work runs on a ready channel. */
+    uint32_t warmup = 0;
+    {
+        uint32_t s, jt, v = 0;
+        for( warmup = 0; warmup < OCM_WARMUP_MAX; warmup++ )
         {
-            uint32_t got = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_DATA + ( i << 2 ) );
-            uint32_t exp = ( 0x100 + i ) + 1;
-            if( got != exp )
+            s = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_V2C_SEQ ) + 1u;
+            HAL_IO_WRITE32( OCM_OP_PING, OCM_MBX_BASE + OCM_OFF_OPCODE );
+            HAL_IO_WRITE32( 0,           OCM_MBX_BASE + OCM_OFF_N_WORDS );
+            HAL_IO_WRITE32( 0,           OCM_MBX_BASE + OCM_OFF_OPERAND );
+            HAL_IO_WRITE32( s,           OCM_MBX_BASE + OCM_OFF_C2V_SEQ );
+            for( jt = 0; jt < OCM_WAIT_ITERS; jt++ )
             {
-                if( 0 == mism )
-                {
-                    PLL_ERR( AMC_NAME, "OCM self-test: DATA[%d]=0x%08X exp 0x%08X\r\n", (int) i, got, exp );
-                }
-                mism++;
-                ok = 0;
+                v = HAL_IO_READ32( OCM_MBX_BASE + OCM_OFF_V2C_SEQ );
+                if( v == s ) { break; }
             }
+            if( v == s ) { break; }
+        }
+    }
+    PLL_LOG( AMC_NAME, "OCM self-test: channel up after %u warm-up pings\r\n", (unsigned) warmup );
+
+    PLL_LOG( AMC_NAME, "OCM self-test: ABI PING/INC/ADD/SUM (mbx @ 0x%08X)\r\n", OCM_MBX_BASE );
+
+    /* 1) PING — liveness, no data window. */
+    rc = ocm_submit( OCM_OP_PING, 0, NULL, 0, NULL, &out_n, &cyc, &it, &retries );
+    if( rc == 0 && out_n == 0 ) { passed++; } else if( !first_fail ) { first_fail = 1; }
+
+    /* 2) INC — DATA[i] + 1 over 8 words. */
+    for( i = 0; i < 8; i++ ) { in[i] = 0x100u + i; }
+    rc = ocm_submit( OCM_OP_INC, 0, in, 8, out, &out_n, &cyc, &it, &retries );
+    { uint32_t good = ( rc == 0 && out_n == 8 );
+      for( i = 0; i < 8; i++ ) { if( out[i] != 0x100u + i + 1u ) { good = 0; } }
+      if( good ) { passed++; } else if( !first_fail ) { first_fail = 2; } }
+
+    /* 3) ADD — DATA[i] + operand over 5 words. */
+    for( i = 0; i < 5; i++ ) { in[i] = 1000u + i; }
+    rc = ocm_submit( OCM_OP_ADD, 7, in, 5, out, &out_n, &cyc, &it, &retries );
+    { uint32_t good = ( rc == 0 && out_n == 5 );
+      for( i = 0; i < 5; i++ ) { if( out[i] != 1000u + i + 7u ) { good = 0; } }
+      if( good ) { passed++; } else if( !first_fail ) { first_fail = 3; } }
+
+    /* 4) SUM — DATA[0] = reduction over 4 words. */
+    in[0] = 10; in[1] = 20; in[2] = 30; in[3] = 40;
+    rc = ocm_submit( OCM_OP_SUM, 0, in, 4, out, &out_n, &cyc, &it, &retries );
+    if( rc == 0 && out_n == 1 && out[0] == 100u ) { passed++; } else if( !first_fail ) { first_fail = 4; }
+
+    /* Latency: repeated PING = channel round-trip floor. */
+    for( i = 0; i < OCM_LAT_RUNS; i++ )
+    {
+        rc = ocm_submit( OCM_OP_PING, 0, in, 0, NULL, NULL, &cyc, &it, &retries );
+        if( rc == 0 )
+        {
+            lat_sum += cyc;
+            if( cyc < lat_min ) { lat_min = cyc; }
+            if( cyc > lat_max ) { lat_max = cyc; }
+            if( it  < it_min  ) { it_min  = it;  }
         }
     }
 
-    if( ok )
-    {
-        PLL_LOG( AMC_NAME, "OCM self-test: PASS (%d words +1 round-trip)\r\n", OCM_TEST_WORDS );
-    }
-    else
-    {
-        PLL_ERR( AMC_NAME, "OCM self-test: FAIL (mismatches=%d)\r\n", (int) mism );
-    }
+    PLL_LOG( AMC_NAME, "OCM self-test: %u/4 opcodes OK, %u retries, latency ~%u cyc\r\n",
+             (unsigned) passed, (unsigned) retries,
+             (unsigned) ( lat_min == 0xFFFFFFFF ? 0 : lat_min ) );
 
-    /* Host-visible verdict: write payload first, magic last (host polls magic).
-     *   +0x04 pass (1/0)  +0x08 mismatches  +0x0C vFPGA rcode (0xFFFFFFFF=timeout) */
-    HAL_IO_WRITE32( ok ? 1u : 0u, OCM_VERDICT_DDR + 0x04 );
-    HAL_IO_WRITE32( mism,         OCM_VERDICT_DDR + 0x08 );
-    HAL_IO_WRITE32( rc,           OCM_VERDICT_DDR + 0x0C );
-    HAL_IO_WRITE32( OCM_VERDICT_MAGIC, OCM_VERDICT_DDR + 0x00 );
+    /* Host-visible verdict (payload first, magic last):
+     *   +0x04 passed  +0x08 total(4)  +0x0C first_fail(0=none|opcode id)
+     *   +0x10 lat_min_cyc  +0x14 lat_max_cyc  +0x18 lat_avg_cyc
+     *   +0x1C retries  +0x20 r5_mhz  +0x24 lat_min_iters */
+    HAL_IO_WRITE32( passed,                                OCM_VERDICT_DDR + 0x04 );
+    HAL_IO_WRITE32( 4u,                                    OCM_VERDICT_DDR + 0x08 );
+    HAL_IO_WRITE32( first_fail,                            OCM_VERDICT_DDR + 0x0C );
+    HAL_IO_WRITE32( ( lat_min == 0xFFFFFFFF ? 0 : lat_min ), OCM_VERDICT_DDR + 0x10 );
+    HAL_IO_WRITE32( lat_max,                               OCM_VERDICT_DDR + 0x14 );
+    HAL_IO_WRITE32( ( OCM_LAT_RUNS ? lat_sum / OCM_LAT_RUNS : 0 ), OCM_VERDICT_DDR + 0x18 );
+    HAL_IO_WRITE32( retries,                               OCM_VERDICT_DDR + 0x1C );
+    HAL_IO_WRITE32( OCM_R5_MHZ,                            OCM_VERDICT_DDR + 0x20 );
+    HAL_IO_WRITE32( ( it_min == 0xFFFFFFFF ? 0 : it_min ), OCM_VERDICT_DDR + 0x24 );
+    HAL_IO_WRITE32( warmup,                                OCM_VERDICT_DDR + 0x28 );
+    HAL_IO_WRITE32( OCM_VERDICT_MAGIC,                     OCM_VERDICT_DDR + 0x00 );
 }
 #endif
+
+#if ( 1 == EN_APU_FIRST_LIGHT_MIRROR )
+/**
+ * @brief   Sample the A72 first-light handshake in OCM and mirror it to DDR.
+ *
+ * Two heartbeat samples separated by a bounded spin let the host distinguish
+ * "the APU booted and is running" from "the APU booted then stopped". A plain
+ * spin is used rather than vTaskDelay because this file uses no FreeRTOS delay
+ * primitives elsewhere and the exact interval does not matter.
+ *
+ * @return  N/A
+ */
+static void vApuFirstLightMirror( void )
+{
+    uint32_t ulMagic = 0;
+    uint32_t ulBeat1 = 0;
+    uint32_t ulBeat2 = 0;
+    uint32_t ulUart0 = 0;
+    uint32_t ulUart1 = 0;
+    uint32_t i       = 0;
+
+    ulMagic = HAL_IO_READ32( APU_HANDSHAKE_BASE + APU_OFF_MAGIC );
+    ulBeat1 = HAL_IO_READ32( APU_HANDSHAKE_BASE + APU_OFF_BEAT  );
+    ulUart0 = HAL_IO_READ32( APU_HANDSHAKE_BASE + APU_OFF_UART0 );
+    ulUart1 = HAL_IO_READ32( APU_HANDSHAKE_BASE + APU_OFF_UART1 );
+
+    for( i = 0; i < APU_SAMPLE_GAP_ITERS; i++ )
+    {
+        __asm__ volatile( "nop" );
+    }
+
+    ulBeat2 = HAL_IO_READ32( APU_HANDSHAKE_BASE + APU_OFF_BEAT );
+
+    HAL_IO_WRITE32( APU_VERDICT_MAGIC,                                APU_VERDICT_DDR + 0x00 );
+    HAL_IO_WRITE32( ( APU_HANDSHAKE_MAGIC == ulMagic ) ? 1u : 0u,     APU_VERDICT_DDR + 0x04 );
+    HAL_IO_WRITE32( ulBeat1,                                          APU_VERDICT_DDR + 0x08 );
+    HAL_IO_WRITE32( ulUart0,                                          APU_VERDICT_DDR + 0x0C );
+    HAL_IO_WRITE32( ulUart1,                                          APU_VERDICT_DDR + 0x10 );
+    HAL_IO_WRITE32( ulBeat2,                                          APU_VERDICT_DDR + 0x14 );
+
+    PLL_LOG( AMC_NAME, "APU first light: magic 0x%08X beat %u->%u uart0 %u uart1 %u\r\n",
+             ( unsigned int )ulMagic, ( unsigned int )ulBeat1, ( unsigned int )ulBeat2,
+             ( unsigned int )ulUart0, ( unsigned int )ulUart1 );
+}
+#endif
+
 
 /**
  * @brief   Main entry point
