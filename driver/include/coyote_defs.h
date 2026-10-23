@@ -100,7 +100,11 @@ extern bool en_hmm;
  */
 
 // Driver constants
-#define COYOTE_DRIVER_NAME "coyote_driver"
+// Ties the pci_driver .name / IRQ / region / workqueue names to the
+// per-platform module name (coyote_driver_versal vs coyote_driver_ultrascale),
+// so both can register and coexist on a dual-card host. KBUILD_MODNAME is the
+// module name string provided by kbuild (see driver/Makefile obj-m).
+#define COYOTE_DRIVER_NAME KBUILD_MODNAME
 #define DEV_FPGA_NAME "coyote_fpga"
 
 // Debug prints
@@ -399,8 +403,21 @@ extern bool en_hmm;
 // vFPGA and the AMC together, no BAR-detach hack). Only meaningful on an
 // EN_AMC=1 V80 bitstream; on others the window reads back 0xFF (harmless).
 #define MMAP_AMC 0x4
-#define AMC_DDR_OFFS 0x0A000000  /* AMC DDR4 window offset within BAR_SHELL_CONFIG */
-#define AMC_DDR_SIZE 0x02000000  /* 32 MB (partition table @ +0x100000, ring @ +0x101000) */
+/* AMC/APU DDR4 window offset within BAR_SHELL_CONFIG (BAR4).
+ * Must match the assign_bd_address in hw/bd/versal/cr_pci.tcl:
+ *   EN_APU=0 : 32 MB window  at BAR4+0x0A000000 (BAR4 = 256 MB)
+ *   EN_APU=1 : 64 MB window  at BAR4+0x0C000000 (BAR4 stays 256 MB)
+ * The larger window exists so the host can write Linux's kernel/DTB/initramfs
+ * straight to their DDR load addresses. BAR sizes themselves are discovered
+ * dynamically via pci_resource_len(), so only this offset needs changing. */
+#define AMC_DDR_OFFS 0x0C000000
+/* Size of the host PCIe window onto DDR4 that MMAP_AMC exposes. MUST match the
+ * assign_bd_address window in hw/bd/versal/cr_pci.tcl (64 MB for the current
+ * layout at AMC_DDR_OFFS). A smaller value silently truncates the mapping: A0's
+ * status block at DDR 0x01FE_0000 still reads fine at 32 MB, but Linux's load
+ * addresses (DTB 0x0200_0000, kernel 0x0208_0000, initramfs 0x0300_0000) sit
+ * above 32 MB and would SIGBUS on access from the host. */
+#define AMC_DDR_SIZE 0x04000000  /* 64 MB */
 #define MMAP_RECONFIG 0x100
 
 // vFPGA IOCTL calls; see vfpga_ops.c for more details

@@ -22,35 +22,42 @@
 # Target platform: ultrascale_plus for u55c, u250, u280 or versal for v80
 TARGET_PLATFORM ?= ultrascale_plus
 
-# Target output name
-obj-m := coyote_driver.o
-
-# Pre-requisites that need to be compiled for the Coyote driver
-coyote_driver-objs := src/coyote_driver.o 
-coyote_driver-objs += src/coyote_setup.o 
-coyote_driver-objs += src/coyote_sysfs.o 
-
+# Module name is platform-specific, so the versal (QDMA) and ultrascale_plus
+# (XDMA) drivers are DISTINCT kernel modules and can be loaded at the same time
+# on a dual-card host (e.g. clara's U280 + V80). This name also flows into
+# COYOTE_DRIVER_NAME via KBUILD_MODNAME (see include/coyote_defs.h), which is
+# the pci_driver .name -- that must differ per platform too, or the second
+# pci_register_driver() collides on /sys/bus/pci/drivers/<name>.
 ifeq ($(TARGET_PLATFORM), versal)
-coyote_driver-objs += src/platform/pci_qdma.o
-ccflags-y += -DPLATFORM_VERSAL
+MODNAME      := coyote_driver_versal
+PLATFORM_OBJ := src/platform/pci_qdma.o
+ccflags-y    += -DPLATFORM_VERSAL
 else ifeq ($(TARGET_PLATFORM), ultrascale_plus)
-coyote_driver-objs += src/platform/pci_xdma.o
-ccflags-y += -DPLATFORM_ULTRASCALE_PLUS
+MODNAME      := coyote_driver_ultrascale
+PLATFORM_OBJ := src/platform/pci_xdma.o
+ccflags-y    += -DPLATFORM_ULTRASCALE_PLUS
 else
 $(error "Unsupported TARGET_PLATFORM specified. Supported options are: ultrascale_plus, versal")
 endif
-coyote_driver-objs += src/platform/pci_util.o
 
-coyote_driver-objs += src/reconfig/reconfig_hw.o 
-coyote_driver-objs += src/reconfig/reconfig_isr.o
-coyote_driver-objs += src/reconfig/reconfig_mem.o
-coyote_driver-objs += src/reconfig/reconfig_ops.o
+# Target output name (produces $(MODNAME).ko)
+obj-m := $(MODNAME).o
 
-coyote_driver-objs += src/vfpga/vfpga_gup.o 
-coyote_driver-objs += src/vfpga/vfpga_hw.o 
-coyote_driver-objs += src/vfpga/vfpga_isr.o 
-coyote_driver-objs += src/vfpga/vfpga_ops.o 
-coyote_driver-objs += src/vfpga/vfpga_uisr.o 
+# Pre-requisites that need to be compiled for the Coyote driver
+$(MODNAME)-objs := src/coyote_driver.o \
+                   src/coyote_setup.o \
+                   src/coyote_sysfs.o \
+                   $(PLATFORM_OBJ) \
+                   src/platform/pci_util.o \
+                   src/reconfig/reconfig_hw.o \
+                   src/reconfig/reconfig_isr.o \
+                   src/reconfig/reconfig_mem.o \
+                   src/reconfig/reconfig_ops.o \
+                   src/vfpga/vfpga_gup.o \
+                   src/vfpga/vfpga_hw.o \
+                   src/vfpga/vfpga_isr.o \
+                   src/vfpga/vfpga_ops.o \
+                   src/vfpga/vfpga_uisr.o
 
 # Location of the Linux kernel header files, we will be building within the context of the kernel's Makefile (the flag -C sets the context)
 # This gives us access to all the Linux kernel functionality, typically implemented in <linux/*.h> and <asm/*.h>

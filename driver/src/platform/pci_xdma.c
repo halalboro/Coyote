@@ -339,7 +339,12 @@ int probe_engines(struct bus_driver_data *bd_data) {
         if (ret_val) { goto fail; }
     }
 
-    if (bd_data->engines_num < 2 * bd_data->n_fpga_chan) {
+    if (bd_data->engines_num == 0) {
+        pr_err("failed to detect any XDMA engines\n");
+        return -ENODEV;
+    }
+
+    if (bd_data->n_fpga_chan > 0 && bd_data->engines_num < 2 * bd_data->n_fpga_chan) {
         pr_err("failed to detect all required c2h or h2c engines\n");
         return -ENODEV;
     }
@@ -655,6 +660,14 @@ int pci_probe(struct pci_dev *pdev, const struct pci_device_id *id) {
     ret_val = read_shell_config(bd_data);
     if(ret_val) {
         dev_err(&pdev->dev, "cannot read shell config\n");
+        goto err_read_shell_cnfg;
+    }
+
+    if (bd_data->engines_num < 2 * bd_data->n_fpga_chan) {
+        dev_err(&pdev->dev,
+                "detected %d XDMA engines, but shell requires %d (%d channels)\n",
+                bd_data->engines_num, 2 * bd_data->n_fpga_chan, bd_data->n_fpga_chan);
+        ret_val = -ENODEV;
         goto err_read_shell_cnfg;
     }
 

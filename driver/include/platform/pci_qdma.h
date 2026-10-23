@@ -118,11 +118,17 @@ void unmap_bars(struct bus_driver_data *data, struct pci_dev *pdev);
 ////////////////////////////////////////////  
 
 /**
- * @brief Utility function, checks that queue context busy bit isn't set, meaning new values can be written to the regs
+ * @brief Utility function, waits for the QDMA context busy bit to clear.
+ *
+ * This function times out instead of spinning forever, so probe can fail cleanly
+ * if the QDMA command interface is stuck.
  *
  * @param data Pointer to the bus driver data structure, containing Coyote device information
+ * @param op Human-readable description of the operation being attempted.
+ * @param cmd_value Command value written to QDMA_CTX_CMD_REG.
+ * @return 0 on success, negative error code on timeout/failure.
  */
-void wait_until_busy_cleared(struct bus_driver_data *bd_data);
+int wait_until_busy_cleared(struct bus_driver_data *bd_data, const char *op, uint32_t cmd_value);
 
 /**
  * @brief Utility function, clears a given context of a queue
@@ -130,8 +136,9 @@ void wait_until_busy_cleared(struct bus_driver_data *bd_data);
  * @param data Pointer to the bus driver data structure, containing Coyote device information
  * @param qid Queue ID
  * @param sel The context to be cleared, options are listed in the QDMA specification from PG347 (v3.4), p301
+ * @return 0 on success, negative error code on timeout/failure.
  */
-void clear_ctx_reg(struct bus_driver_data *bd_data, int32_t qid, int32_t sel);
+int clear_ctx_reg(struct bus_driver_data *bd_data, int32_t qid, int32_t sel);
 
 /**
  * @brief Utility function, invalidates a given context of a queue
@@ -139,8 +146,9 @@ void clear_ctx_reg(struct bus_driver_data *bd_data, int32_t qid, int32_t sel);
  * @param data Pointer to the bus driver data structure, containing Coyote device information
  * @param qid Queue ID
  * @param sel The context to be invalidated, options are listed in the QDMA specification from PG347 (v3.4), p301
+ * @return 0 on success, negative error code on timeout/failure.
  */
-void invalidate_ctx_reg(struct bus_driver_data *bd_data, int32_t qid, int32_t sel);
+int invalidate_ctx_reg(struct bus_driver_data *bd_data, int32_t qid, int32_t sel);
 
 /**
  * @brief Enables a single C2H or H2C queue

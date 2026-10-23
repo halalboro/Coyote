@@ -23,6 +23,10 @@
 
 static uint32_t current_device = 0;
 
+#define QDMA_CTX_BUSY_TIMEOUT_US 1000000
+
+static int qdma_issue_ctx_cmd(struct bus_driver_data *bd_data, uint32_t reg_val, const char *op);
+
 void assign_device_id(struct bus_driver_data *bd_data) {
     bd_data->dev_id = current_device++;
     dbg_info("fpga device id %d, pci bus %02x, pci slot %02x\n", bd_data->dev_id, bd_data->pci_dev->bus->number, PCI_SLOT(bd_data->pci_dev->devfn));
@@ -200,37 +204,63 @@ void unmap_bars(struct bus_driver_data *bd_data, struct pci_dev *pdev) {
     }
 }
 
-void wait_until_busy_cleared(struct bus_driver_data *bd_data) {
-    int busy;
+int wait_until_busy_cleared(struct bus_driver_data *bd_data, const char *op, uint32_t cmd_value) {
+    ktime_t deadline = ktime_add_us(ktime_get(), QDMA_CTX_BUSY_TIMEOUT_US);
+    uint32_t status;
+
     do {
-        usleep_range(DMA_MIN_SLEEP_CMD, DMA_MIN_SLEEP_CMD);
-        busy = ioread32(bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG) & 0x1;
-    } while (busy);
+        usleep_range(DMA_MIN_SLEEP_CMD, DMA_MAX_SLEEP_CMD);
+        status = ioread32(bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
+        // All-ones is the classic "device not responding" signature (BAR decode
+        // off, endpoint reset, or QDMA block dead). Bail at once instead of
+        // burning the whole deadline on every context of every queue.
+        if (status == 0xffffffff) {
+            pr_err("QDMA context command read 0xffffffff during %s; device not responding\n", op);
+            return -ENODEV;
+        }
+        if ((status & 0x1) == 0) {
+            return 0;
+        }
+    } while (ktime_compare(ktime_get(), deadline) < 0);
+
+    pr_err(
+        "QDMA context command timed out during %s: cmd_write=0x%08x cmd_reg=0x%08x data[0]=0x%08x data[1]=0x%08x\n",
+        op,
+        cmd_value,
+        status,
+        ioread32(bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_DATA_REG_START),
+        ioread32(bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_DATA_REG_START + 4)
+    );
+    return -ETIMEDOUT;
 }
 
-void clear_ctx_reg(struct bus_driver_data *bd_data, int32_t qid, int32_t sel) {
+static int qdma_issue_ctx_cmd(struct bus_driver_data *bd_data, uint32_t reg_val, const char *op) {
+    iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
+    wmb();
+    return wait_until_busy_cleared(bd_data, op, reg_val);
+}
+
+int clear_ctx_reg(struct bus_driver_data *bd_data, int32_t qid, int32_t sel) {
     // Issue clear operation
     int32_t reg_val = QDMA_CTX_BUSY_VAL_DEAULT |
                       ((sel & QDMA_CTX_SEL_MASK) << QDMA_CTX_SEL_SHIFT) |
                       ((QDMA_CTX_CLR & QDMA_CTX_OP_MASK) << QDMA_CTX_OP_SHIFT) |
                       ((qid & QDMA_CTX_QID_MASK) << QDMA_CTX_QID_SHIFT);
-    iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
-    wmb();
-    wait_until_busy_cleared(bd_data);
+    return qdma_issue_ctx_cmd(bd_data, reg_val, "clearing QDMA context");
 }
 
-void invalidate_ctx_reg(struct bus_driver_data *bd_data, int32_t qid, int32_t sel) {
+int invalidate_ctx_reg(struct bus_driver_data *bd_data, int32_t qid, int32_t sel) {
     // Issue invalidate operation
     int32_t reg_val = QDMA_CTX_BUSY_VAL_DEAULT |
                       ((sel & QDMA_CTX_SEL_MASK) << QDMA_CTX_SEL_SHIFT) |
                       ((QDMA_CTX_INV & QDMA_CTX_OP_MASK) << QDMA_CTX_OP_SHIFT) |
                       ((qid & QDMA_CTX_QID_MASK) << QDMA_CTX_QID_SHIFT);
-    iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
-    wmb();
-    wait_until_busy_cleared(bd_data);
+    return qdma_issue_ctx_cmd(bd_data, reg_val, "invalidating QDMA context");
 }
 
 int enable_queue(struct bus_driver_data *bd_data, int32_t qid, bool c2h, bool is_mm, uint32_t mm_chn) {
+    int ret_val = 0;
+
     // Initialize the queue struct
     dbg_info("creating queue with qid %d, c2h %d, is_mm %d, mm_chn %d\n", qid, c2h, is_mm, mm_chn);
     
@@ -264,12 +294,18 @@ int enable_queue(struct bus_driver_data *bd_data, int32_t qid, bool c2h, bool is
     
     // Clear any previous contexts
     dbg_info("clearing SW, HW, credit contexts for qid %d", qid);
-    clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_SW_C2H);
-    clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_SW_H2C);
-    clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_HW_C2H);
-    clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_HW_H2C);
-    clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_CR_C2H);
-    clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_CR_H2C);
+    ret_val = clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_SW_C2H);
+    if (ret_val) { goto fail; }
+    ret_val = clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_SW_H2C);
+    if (ret_val) { goto fail; }
+    ret_val = clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_HW_C2H);
+    if (ret_val) { goto fail; }
+    ret_val = clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_HW_H2C);
+    if (ret_val) { goto fail; }
+    ret_val = clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_CR_C2H);
+    if (ret_val) { goto fail; }
+    ret_val = clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_CR_H2C);
+    if (ret_val) { goto fail; }
 
     // Initialize the register mask to all 1s, as specified in the docs
     for (int i = 0; i < QDMA_CTX_N_DATA_REGS; i++) {
@@ -323,9 +359,8 @@ int enable_queue(struct bus_driver_data *bd_data, int32_t qid, bool c2h, bool is
                 ((QDMA_CTX_WR & QDMA_CTX_OP_MASK) << QDMA_CTX_OP_SHIFT) |
                 ((qid & QDMA_CTX_QID_MASK) << QDMA_CTX_QID_SHIFT);
     }
-    iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
-    wmb();
-    wait_until_busy_cleared(bd_data);
+    ret_val = qdma_issue_ctx_cmd(bd_data, reg_val, "writing QDMA software context");
+    if (ret_val) { goto fail; }
 
     // Read the hardware register (idl_stp_b, Table 7 in spec) to check the queue is enabled
     // Fist, issue read command
@@ -340,9 +375,8 @@ int enable_queue(struct bus_driver_data *bd_data, int32_t qid, bool c2h, bool is
                 ((QDMA_CTX_RD & QDMA_CTX_OP_MASK) << QDMA_CTX_OP_SHIFT) |
                 ((qid & QDMA_CTX_QID_MASK) << QDMA_CTX_QID_SHIFT);
     }
-    iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
-    wmb();
-    wait_until_busy_cleared(bd_data);
+    ret_val = qdma_issue_ctx_cmd(bd_data, reg_val, "reading QDMA hardware context");
+    if (ret_val) { goto fail; }
     
     // Then, read bit 41, corresponding to idl_stp_b
     reg_val = ioread32(bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_DATA_REG_START + 4);
@@ -356,8 +390,10 @@ int enable_queue(struct bus_driver_data *bd_data, int32_t qid, bool c2h, bool is
     
     // Clear prefetch and completion contexts, as per QDMA specification from PG347 (v3.4), p301
     dbg_info("clearing prefetch and completion contexts for qid %d", qid);
-    clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_PFTCH);
-    clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_WRB);
+    ret_val = clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_PFTCH);
+    if (ret_val) { goto fail; }
+    ret_val = clear_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_WRB);
+    if (ret_val) { goto fail; }
 
     // Set up prefetch context for C2H streams in simple bypass mode, per Table 128 in QDMA specification from PG347 (v3.4) 
     if (c2h) {
@@ -375,18 +411,16 @@ int enable_queue(struct bus_driver_data *bd_data, int32_t qid, bool c2h, bool is
                 ((QDMA_CTX_WR & QDMA_CTX_OP_MASK) << QDMA_CTX_OP_SHIFT) |
                 ((qid & QDMA_CTX_QID_MASK) << QDMA_CTX_QID_SHIFT);
    
-        iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
-        wmb();
-        wait_until_busy_cleared(bd_data);
+        ret_val = qdma_issue_ctx_cmd(bd_data, reg_val, "writing QDMA prefetch context");
+        if (ret_val) { goto fail; }
         
         // Verify prefetch contex is indeed set to valid; first issue read command
         reg_val = QDMA_CTX_BUSY_VAL_DEAULT |
             ((QDMA_CTXT_SELC_PFTCH & QDMA_CTX_SEL_MASK) << QDMA_CTX_SEL_SHIFT) |
             ((QDMA_CTX_RD & QDMA_CTX_OP_MASK) << QDMA_CTX_OP_SHIFT) |
             ((qid & QDMA_CTX_QID_MASK) << QDMA_CTX_QID_SHIFT);
-        iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
-        wmb();
-        usleep_range(DMA_MIN_SLEEP_CMD, DMA_MIN_SLEEP_CMD);
+        ret_val = qdma_issue_ctx_cmd(bd_data, reg_val, "reading QDMA prefetch context");
+        if (ret_val) { goto fail; }
 
         // Then, read bit 45, corresponding to valid bit
         reg_val = ioread32(bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_DATA_REG_START + 4);
@@ -456,9 +490,8 @@ int enable_queue(struct bus_driver_data *bd_data, int32_t qid, bool c2h, bool is
                 ((QDMA_CTX_WR & QDMA_CTX_OP_MASK) << QDMA_CTX_OP_SHIFT) |
                 ((qid & QDMA_CTX_QID_MASK) << QDMA_CTX_QID_SHIFT);
    
-    iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
-    wmb();
-    wait_until_busy_cleared(bd_data);
+    ret_val = qdma_issue_ctx_cmd(bd_data, reg_val, "writing QDMA completion context");
+    if (ret_val) { goto fail; }
     dbg_info("enabled completion context for qid %d", qid);
 
     // Set-up complete, add to array of queues
@@ -470,13 +503,19 @@ int enable_queue(struct bus_driver_data *bd_data, int32_t qid, bool c2h, bool is
 
 fail:
     if (c2h) {
-        invalidate_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_PFTCH);
-        invalidate_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_SW_C2H);
+        if (invalidate_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_PFTCH)) {
+            pr_warn("failed to invalidate QDMA prefetch context during queue cleanup, qid %d\n", qid);
+        }
+        if (invalidate_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_SW_C2H)) {
+            pr_warn("failed to invalidate QDMA SW C2H context during queue cleanup, qid %d\n", qid);
+        }
     } else {
-        invalidate_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_SW_H2C);
+        if (invalidate_ctx_reg(bd_data, qid, QDMA_CTXT_SELC_DEC_SW_H2C)) {
+            pr_warn("failed to invalidate QDMA SW H2C context during queue cleanup, qid %d\n", qid);
+        }
     }
     kfree(tmp_queue);
-    return -1;
+    return ret_val ? ret_val : -EIO;
 }
 
 int enable_queues(struct bus_driver_data *bd_data) {
@@ -512,9 +551,8 @@ int enable_queues(struct bus_driver_data *bd_data) {
                       ((QDMA_CTXT_SELC_FMAP & QDMA_CTX_SEL_MASK) << QDMA_CTX_SEL_SHIFT) |
                       ((QDMA_CTX_WR & QDMA_CTX_OP_MASK) << QDMA_CTX_OP_SHIFT) |
                       ((0 & QDMA_CTX_QID_MASK) << QDMA_CTX_QID_SHIFT);
-    iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
-    wmb();
-    usleep_range(DMA_MIN_SLEEP_CMD, DMA_MIN_SLEEP_CMD);
+    ret_val = qdma_issue_ctx_cmd(bd_data, reg_val, "writing QDMA function map context");
+    if (ret_val) { goto fail; }
     dbg_info("initialized function map table");
 
     // Program host profile (required for MM transfers)
@@ -548,9 +586,8 @@ int enable_queues(struct bus_driver_data *bd_data) {
                       ((QDMA_CTXT_SELC_HOST_PROFILE & QDMA_CTX_SEL_MASK) << QDMA_CTX_SEL_SHIFT) |
                       ((QDMA_CTX_WR & QDMA_CTX_OP_MASK) << QDMA_CTX_OP_SHIFT) |
                       ((QDMA_DEFAULT_HOST_PROFILE_ID & QDMA_CTX_QID_MASK) << QDMA_CTX_QID_SHIFT);
-    iowrite32(reg_val, bd_data->bar[BAR_DMA_CONFIG] + QDMA_CTX_CMD_REG);
-    wmb();
-    usleep_range(DMA_MIN_SLEEP_CMD, DMA_MIN_SLEEP_CMD);
+    ret_val = qdma_issue_ctx_cmd(bd_data, reg_val, "writing QDMA host profile context");
+    if (ret_val) { goto fail; }
     dbg_info("host profile set");
 
     // Card-to-host (C2H) queues need a prefetch tag to operate in bypass mode
@@ -609,7 +646,7 @@ fail:
     iowrite32(0, bd_data->bar[BAR_DMA_CONFIG] + QDMA_H2C_MM_CTRL_REG);
     // iowrite32(0, bd_data->bar[BAR_DMA_CONFIG] + QDMA_C2H_MM_CTRL_REG);
 
-    return -1;
+    return ret_val ? ret_val : -EIO;
 
 success:
     return ret_val;
@@ -618,6 +655,16 @@ success:
 void disable_queues(struct bus_driver_data *bd_data) {
     BUG_ON(!bd_data);
 
+    // When the device is gone or its link is offline, issuing QDMA context
+    // invalidations is futile and can wedge teardown in an uninterruptible MMIO
+    // poll. Skip the hardware pokes in that case, but still free the per-queue
+    // bookkeeping below so removal completes without leaking.
+    bool dev_live = pci_device_is_present(bd_data->pci_dev) &&
+                    !pci_channel_offline(bd_data->pci_dev);
+    if (!dev_live) {
+        pr_warn("device not present/offline; freeing queues without QDMA context invalidation\n");
+    }
+
     int num_queues = bd_data->num_queues;
     for (int i = 0; i < num_queues; i++) {
         struct qdma_queue *tmp_queue = bd_data->queues[i];
@@ -625,20 +672,33 @@ void disable_queues(struct bus_driver_data *bd_data) {
             dbg_info("disabling queue with qid %d\n", tmp_queue->qid);
             
             // Invalidate contexts, as per QDMA specification from PG347 (v3.4), p301
-            if (tmp_queue->c2h) {
-                invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_PFTCH);
-                invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_WRB);
-                invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_DEC_SW_C2H);
-                invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_TIMER);
-            } else {
-                invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_WRB);
-                invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_DEC_SW_H2C);
+            if (dev_live && tmp_queue->c2h) {
+                if (invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_PFTCH)) {
+                    pr_warn("failed to invalidate QDMA prefetch context during disable, qid %d\n", tmp_queue->qid);
+                }
+                if (invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_WRB)) {
+                    pr_warn("failed to invalidate QDMA completion context during disable, qid %d\n", tmp_queue->qid);
+                }
+                if (invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_DEC_SW_C2H)) {
+                    pr_warn("failed to invalidate QDMA SW C2H context during disable, qid %d\n", tmp_queue->qid);
+                }
+                if (invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_TIMER)) {
+                    pr_warn("failed to invalidate QDMA timer context during disable, qid %d\n", tmp_queue->qid);
+                }
+            } else if (dev_live) {
+                if (invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_WRB)) {
+                    pr_warn("failed to invalidate QDMA completion context during disable, qid %d\n", tmp_queue->qid);
+                }
+                if (invalidate_ctx_reg(bd_data, tmp_queue->qid, QDMA_CTXT_SELC_DEC_SW_H2C)) {
+                    pr_warn("failed to invalidate QDMA SW H2C context during disable, qid %d\n", tmp_queue->qid);
+                }
             }
             // Not really needed, but included for completness sake
             tmp_queue->running = 0;
 
             // Release the dynamically allocated memory for this engine
             kfree(tmp_queue);
+            bd_data->queues[i] = NULL;  // guard against a double-free if teardown runs twice
 
             bd_data->num_queues--;
         }
