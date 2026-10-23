@@ -188,6 +188,112 @@ modport s (
 endinterface
 
 // ----------------------------------------------------------------------------
+// AXI4 write-only (AW/W/B channels only)
+// ----------------------------------------------------------------------------
+// Used for the inter-vFPGA P2P NoC path, which is a pure push (write). Dropping
+// the AR/R channels removes ~600 of the ~1293 wires from each fabric<->NoC bus
+// and, crucially, from the DFX partition interface — so those wires never cross
+// an SLR boundary as fabric SLLs. Structurally identical to AXI4 minus AR/R.
+interface AXI4W #(
+	parameter AXI4_ADDR_BITS = 64,
+	parameter AXI4_DATA_BITS = AXI_DATA_BITS,
+	parameter AXI4_ID_BITS = AXI_ID_BITS
+) (
+	input  logic aclk
+);
+
+typedef logic [AXI4_ADDR_BITS-1:0] addr_t;
+typedef logic [AXI4_DATA_BITS-1:0] data_t;
+typedef logic [AXI4_DATA_BITS/8-1:0] strb_t;
+typedef logic [AXI4_ID_BITS-1:0] id_t;
+
+// AW channel
+addr_t 			awaddr;
+logic[1:0]		awburst;
+logic[3:0]		awcache;
+id_t		    awid;
+logic[7:0]		awlen;
+logic[0:0]		awlock;
+logic[2:0]		awprot;
+logic[3:0]		awqos;
+logic[3:0]		awregion;
+logic[2:0]		awsize;
+logic			awready;
+logic			awvalid;
+
+// W channel
+data_t 			wdata;
+logic			wlast;
+strb_t 			wstrb;
+logic			wready;
+logic			wvalid;
+
+// B channel
+id_t      		bid;
+logic[1:0]		bresp;
+logic			bready;
+logic			bvalid;
+
+// Tie off unused master signals
+task tie_off_m ();
+    awaddr    = 0;
+    awburst   = 2'b01;
+    awcache   = 4'b0;
+    awid      = 0;
+    awlen     = 8'b0;
+    awlock    = 1'b0;
+    awprot    = 3'b0;
+    awqos     = 4'b0;
+    awregion  = 4'b0;
+    awsize    = 3'b0;
+    awvalid   = 1'b0;
+    bready    = 1'b0;
+    wdata     = 0;
+    wlast     = 1'b0;
+    wstrb     = 0;
+    wvalid    = 1'b0;
+endtask
+
+// Tie off unused slave signals
+task tie_off_s ();
+    awready  = 1'b0;
+    bresp    = 2'b0;
+    bvalid   = 1'b0;
+    bid      = 0;
+    wready   = 1'b0;
+endtask
+
+// Master
+modport m (
+	import tie_off_m,
+	// AW
+	input awready,
+	output awaddr, awburst, awcache, awlen, awlock, awprot, awqos, awregion, awsize, awvalid, awid,
+	// W
+	input wready,
+	output wdata, wlast, wstrb, wvalid,
+	// B
+	input bresp, bvalid, bid,
+	output bready
+);
+
+// Slave
+modport s (
+	import tie_off_s,
+	// AW
+	input awaddr, awburst, awcache, awlen, awlock, awprot, awqos, awregion, awsize, awvalid, awid,
+	output awready,
+	// W
+	input wdata, wlast, wstrb, wvalid,
+	output wready,
+	// B
+	input bready,
+	output bresp, bvalid, bid
+);
+
+endinterface
+
+// ----------------------------------------------------------------------------
 // AXI4 lite
 // ----------------------------------------------------------------------------
 interface AXI4L #(

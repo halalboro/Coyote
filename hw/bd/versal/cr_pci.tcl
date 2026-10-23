@@ -196,16 +196,10 @@ proc cr_bd_design_static { parentCell } {
     CONFIG.PROTOCOL {AXI4} \
   ] $axi_debug_hub
 
-  # AXI-MM master interface per vFPGA. Each slave carries wrapper->NoC
-  # writes (from axis_to_mm bridge, Stage 2); each master delivers
-  # NoC->wrapper writes (to mm_to_axis bridge). Full N×N connectivity is
-    # NS send-group slave ports (shell drives, NoC consumes)
-      # the AR/R channels removes them from the design_static wrapper flat ports, so
-      # they never cross an SLR boundary as fabric SLLs (~45% fewer crossing wires).
-    }
-    # M hub master ports (NoC drives, shell consumes -> mm_to_axis_demux)
-    }
-  }
+  # NOTE (Network-3 P2P): the inter-vFPGA P2P NoC no longer lives in design_static.
+  # Its NMU/NSU endpoints are now PL-facing xpm_nmu_strm/xpm_nsu_strm instantiated
+  # in the reconfigurable shell (Versal DFX Network-3), so there are no s_axi_p2p_*/
+  # m_axi_p2p_* boundary ports and no axi_noc_p2p BD here. See shell_top template.
 
   # QDMA status
   set h2c_status [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:eqdma_qsts_rtl:1.0 h2c_status ]
@@ -249,12 +243,9 @@ proc cr_bd_design_static { parentCell } {
   # Main clock
   set xclk [ create_bd_port -dir O -type clk xclk ]
   # Bind the shell-clock (333 MHz) AXI interfaces to xclk so they inherit its
-  # interfaces (whose aclk0 is also driven by clk_wiz_0/clk_out1). Otherwise the
-  # ports default to 100 MHz and validate_bd_design fails with BD 41-237.
+  # FREQ_HZ. (Network-3 P2P has no s_axi_p2p_*/m_axi_p2p_* boundary ports here;
+  # the NoC endpoints live in the shell.)
   set xclk_busif "m_axis_h2c:s_axis_c2h:axi_cnfg:axi_main:axi_debug_hub"
-    }
-    }
-  }
   # Coprocessor R5 provider shares the shell clock (ported from fork 5e2d27ba).
   if {$r5_provider_enabled} {
     append xclk_busif ":r5_provider"
@@ -1109,31 +1100,10 @@ proc cr_bd_design_static { parentCell } {
   # Debug Hub config
   connect_bd_intf_net [get_bd_intf_pins axi_noc_0/M03_AXI] [get_bd_intf_ports axi_debug_hub]
 
-  # ============================================================
-  # ============================================================
-  # V80's Gen-1 NoC IP (axi_noc:1.1) is AXI-MM only; AXIS transport is
-  # handled by soft axis_to_mm/mm_to_axis bridges in the wrapper (Stage 2).
-
-    # sclk_f — 333 MHz on V80), which is clk_wiz_0/clk_out1 (NOT the raw
-    # 100 MHz pl0_ref_clk). Driving aclk0 from clk_wiz_0/clk_out1 makes the
-    # NoC SI/MI interfaces resolve to the shell frequency so they match the
-    # via CONFIG.ASSOCIATED_BUSIF above). Mismatch here => BD 41-237.
-    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] \
-
-    # Wire external ports to NoC endpoints. NS send-group SIs, M hub MIs.
-      set idx [format "%02d" $i]
-      # SI (wrapper -> NoC): external slave port drives NoC SI
-    }
-      set idx [format "%02d" $h]
-      # MI (NoC -> wrapper): NoC hub MI drives external master port
-    }
-
-    # Address map: BASE=0x210_0000_0000 (above the axi_noc_0 memory apertures at
-    # 0x201/0x202_4/0x208), per-endpoint window = 256 MB (0x1000_0000). Each MI j
-    # gets aperture [BASE + j*WINDOW, +WINDOW); the NoC decodes an SI write there
-    # to MI j. Bridges (Stage 2) discard the low bits. Set via CONFIG.APERTURES on
-    # the MI pins (external PL ports have no /Reg segment for assign_bd_address).
-  }
+  # (Network-3 P2P: no axi_noc_p2p in design_static. The inter-vFPGA NoC endpoints
+  # are PL-facing xpm_nmu_strm/xpm_nsu_strm in the reconfigurable shell; connections
+  # are declared with create_noc_connection in the shell constraints. See shell_top
+  # template and hw/constraints/v80/shell/synth/p2p_noc_conn.xdc.)
 
   if {$r5_platform_enabled} {
     # R5-0 reaches only this bounded persistent static scratch aperture.

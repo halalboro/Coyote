@@ -35,8 +35,8 @@ module shell_data_cc #(
     parameter integer       N_STAGES_0 = 1,
     parameter integer       N_STAGES_1 = 1
 ) (
-    input  logic [14:0]     s_usr_irq,
-    output logic [14:0]     m_usr_irq,
+    input  logic [N_USR_IRQ-1:0]     s_usr_irq,
+    output logic [N_USR_IRQ-1:0]     m_usr_irq,
 
     AXI4S.s                 s_axis_dyn_in [N_SCHAN],
     AXI4S.m                 m_axis_dyn_in [N_SCHAN],
@@ -58,7 +58,7 @@ module shell_data_cc #(
     input  logic            aresetn
 );
 
-logic [2-1:0][14:0] usr_irq;
+logic [2-1:0][N_USR_IRQ-1:0] usr_irq;
 AXI4S axis_dyn_in [N_SCHAN][2] ();
 AXI4S axis_dyn_out [N_SCHAN][2] ();
 dmaIntf dma_rd_req [N_SCHAN][2] ();
@@ -68,7 +68,7 @@ metaIntf #(.STYPE(wback_t)) wback [2] ();
 `endif
 
 // Slicing input
-logic_reg_array #(.N_STAGES(N_STAGES_0), .DATA_BITS(15)) inst_s0_usr_irq (.aclk(xclk), .aresetn(xresetn), .s_data(usr_irq[0]), .m_data(m_usr_irq));
+logic_reg_array #(.N_STAGES(N_STAGES_0), .DATA_BITS(N_USR_IRQ)) inst_s0_usr_irq (.aclk(xclk), .aresetn(xresetn), .s_data(usr_irq[0]), .m_data(m_usr_irq));
 
 for(genvar i = 0; i < N_SCHAN; i++) begin
     axis_reg_array #(.N_STAGES(N_STAGES_0)) inst_s0_axis_dyn_out (.aclk(xclk), .aresetn(xresetn), .s_axis(s_axis_dyn_in[i]), .m_axis(axis_dyn_in[i][0]));
@@ -82,7 +82,7 @@ end
 `endif
 
 // Ccross
-logic_ccross #(.DATA_BITS(15)) inst_s2_usr_irq (.s_aclk(aclk), .s_aresetn(aresetn), .m_aclk(xclk), .m_aresetn(xresetn), .s_data(usr_irq[1]), .m_data(usr_irq[0]));
+logic_ccross #(.DATA_BITS(N_USR_IRQ)) inst_s2_usr_irq (.s_aclk(aclk), .s_aresetn(aresetn), .m_aclk(xclk), .m_aresetn(xresetn), .s_data(usr_irq[1]), .m_data(usr_irq[0]));
 
 for(genvar i = 0; i < N_SCHAN; i++) begin
     axis_ccross inst_s2_axis_dyn_out (.s_aclk(xclk), .s_aresetn(xresetn), .m_aclk(aclk), .m_aresetn(aresetn), .s_axis(axis_dyn_in[i][0]), .m_axis(axis_dyn_in[i][1]));
@@ -96,7 +96,7 @@ end
 `endif
 
 // Slicing output
-logic_reg_array #(.N_STAGES(N_STAGES_1), .DATA_BITS(15)) inst_s3_usr_irq (.aclk(aclk), .aresetn(aresetn), .s_data(s_usr_irq), .m_data(usr_irq[1]));
+logic_reg_array #(.N_STAGES(N_STAGES_1), .DATA_BITS(N_USR_IRQ)) inst_s3_usr_irq (.aclk(aclk), .aresetn(aresetn), .s_data(s_usr_irq), .m_data(usr_irq[1]));
 
 for(genvar i = 0; i < N_SCHAN; i++) begin
     axis_reg_array #(.N_STAGES(N_STAGES_1)) inst_s3_axis_dyn_out (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_dyn_in[i][1]), .m_axis(m_axis_dyn_in[i]));

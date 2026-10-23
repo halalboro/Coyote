@@ -79,7 +79,7 @@ set_property "ip_output_repo" "$proj_dir/$project.cache/ip" $proj
 set_property "sim.ip.auto_export_scripts" "1"               $proj
 set_property "target_language" "Verilog"                    $proj
 set_property "simulator_language" "Mixed"                   $proj
-set_property "xpm_libraries" "XPM_CDC XPM_MEMORY"           $proj
+set_property "xpm_libraries" "XPM_CDC XPM_MEMORY XPM_NOC"   $proj
 
 ########################################################################################################
 # CREATE & ADD FILES
@@ -166,6 +166,30 @@ set_property "top" "shell_top" [current_fileset]
 add_files -norecurse -fileset [get_filesets constrs_1] "$proj_dir/xdc"
 add_files -norecurse -fileset [get_filesets constrs_1] "$hw_dir/constraints/$cfg(fdev)/shell/synth"
 set_property used_in_implementation false [get_files -of_objects [get_filesets constrs_1]]
+# Network-3 P2P: the create_noc_connection XDC must run BEFORE synthesis so the NoC
+# is built into the shell netlist (mirrors the AMD RTL modular-NoC tutorial's
+# USED_IN {synthesis_pre} on noc_constraints.xdc). validate_noc runs later on the
+# linked design (CIPS present) in pnr_shell.
+if {$cfg(fdev) eq "v80" && $cfg(en_p2p) eq 1 && $cfg(n_reg) > 1} {
+    set p2p_conn_xdc [get_files -quiet "*p2p_noc_conn.xdc"]
+    if {$p2p_conn_xdc ne ""} {
+        set_property USED_IN {synthesis_pre} $p2p_conn_xdc
+    }
+}
+# Host DMA over NoC: same synthesis_pre treatment for the host-DMA NoC connections.
+if {$cfg(fdev) eq "v80" && $cfg(en_host_noc) eq 1 && $cfg(n_reg) > 1} {
+    set host_conn_xdc [get_files -quiet "*host_noc_conn.xdc"]
+    if {$host_conn_xdc ne ""} {
+        set_property USED_IN {synthesis_pre} $host_conn_xdc
+    }
+}
+# Control/descriptor over NoC: same synthesis_pre treatment for the SQ/CQ + notify NoC connections.
+if {$cfg(fdev) eq "v80" && $cfg(en_host_noc) eq 1 && $cfg(n_reg) > 1} {
+    set host_ctrl_conn_xdc [get_files -quiet "*host_ctrl_noc_conn.xdc"]
+    if {$host_ctrl_conn_xdc ne ""} {
+        set_property USED_IN {synthesis_pre} $host_ctrl_conn_xdc
+    }
+}
 # set_property -name {STEPS.SYNTH_DESIGN.ARGS.MORE OPTIONS} -value {-mode out_of_context} -objects [get_runs synth_1]
 
 # Create a project-local constraint file to take debugging constraints that we don't want to propagate to the repository.

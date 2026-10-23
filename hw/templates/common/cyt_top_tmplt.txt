@@ -338,7 +338,7 @@ module cyt_top (
     wire [0:0] xresetn;
 
     // ISR
-    wire [14:0] usr_irq;
+    wire [N_USR_IRQ-1:0] usr_irq;
 
     // AXI Interfaces: config, data & command
     AXI4 axi_main_st2sh ();
@@ -383,6 +383,8 @@ module cyt_top (
     // Debug
     AXI4 #(.AXI4_DATA_BITS(128), .AXI4_ADDR_BITS(64), .AXI4_ID_BITS(2)) axi_debug_hub_st2sh ();
 {% endif %}
+
+    // (Network-3 P2P: no axi_p2p_s/axi_p2p_m bridge interfaces; NoC is in the shell.)
 
 {% if cnfg.fdev == 'u280' or cnfg.fdev == 'u50d'%}
     // The notorius D32 pin
@@ -455,9 +457,10 @@ module cyt_top (
         .s_dma_rd_req(dma_rd_req_sh2st),
         .s_dma_wr_req(dma_wr_req_sh2st),
 
-        // Debug 
+        // Debug
         .m_axi_debug_hub(axi_debug_hub_st2sh),
 
+        // (Network-3 P2P: no p2p wiring on inst_static.)
 {% if cnfg.en_amc %}
         // Example 15 — OCM channel (static slave side) + R5 wake IRQ
         .s_axi_ocm(axi_ocm_sh2st),
@@ -880,6 +883,7 @@ module cyt_top (
         .s_axi_debug_hub_bvalid(axi_debug_hub_st2sh.bvalid),
     {% endif %}
 
+        // (Network-3 P2P: no p2p port map on inst_shell; endpoints are inside it.)
 {% if cnfg.en_amc %}
         // Example 15 — OCM channel: shell master (ocm_mbx) -> static slave.
         // Flat ports here map 1:1 onto the axi_ocm_sh2st interface members.

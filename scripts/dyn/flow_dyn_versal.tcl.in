@@ -98,6 +98,18 @@ for {set j 0}  {$j < $cfg(n_reg)} {incr j} {
 append cmd " } -part $part -top cyt_top"
 eval $cmd
 
+# Inter-vFPGA P2P (Network-3): validate the shell's NoC endpoints on the linked
+# design before place. Mirrors the guard in pnr_shell.tcl.in; fails fast if the
+# create_noc_connection graph can't be solved (cheaper than discovering it at route).
+if {$cfg(fdev) eq "v80" && $cfg(en_p2p) eq 1 && $cfg(n_reg) > 1} {
+    puts "** Network-3 P2P: validate_noc on the PR-linked design ..."
+    if {[catch {validate_noc} p2p_noc_err]} {
+        puts "** validate_noc FAILED: $p2p_noc_err"
+        exit 1
+    }
+    puts "** Network-3 P2P: validate_noc completed"
+}
+
 # Weird workaround to ensure consistency with rest of Coyote;
 # config 0 acts as the default config, so also save it as shell_linked.dcp
 # Same logic applies to all subsequent checkpoints (e.g., shell_opted.dcp, shell_placed.dcp, etc.)

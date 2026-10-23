@@ -58,6 +58,8 @@ module static_top (
     input  logic                            ocm_irq,
 {% endif %}
 
+    // (Network-3 P2P: no s_axi_p2p/m_axi_p2p ports — the inter-vFPGA NoC
+    // endpoints live in the shell, not design_static.)
 
     // AXI4 Stream Data interfaces
     AXI4S.m                                 m_axis_dyn_out [N_SCHAN],
@@ -369,6 +371,7 @@ module static_top (
         .axi_debug_hub_wstrb(m_axi_debug_hub.wstrb),
         .axi_debug_hub_wvalid(m_axi_debug_hub.wvalid),
 
+        // (Network-3 P2P: NoC endpoints are in the shell; no p2p port map here.)
 {% if cnfg.en_amc %}
         // Example 15 — OCM channel slave (BD s_axi_ocm -> S_AXI_LPD -> OCM).
         // Full AXI4 set; names mirror the design_static BD wrapper (cr_aved_mgmt.tcl).

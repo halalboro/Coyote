@@ -37,8 +37,8 @@ module dcpl_static #(
 
     input  logic                            s_decouple,
 
-    input  logic [14:0]                     s_usr_irq,
-    output logic [14:0]                     m_usr_irq,
+    input  logic [N_USR_IRQ-1:0]            s_usr_irq,
+    output logic [N_USR_IRQ-1:0]            m_usr_irq,
 
     AXI4.s                                  s_axi_main,
     AXI4.m                                  m_axi_main,
@@ -60,7 +60,7 @@ module dcpl_static #(
 
     // Init after ccross
     logic [N_REG_STA_DCPL-1:0] decouple;
-    logic [14:0] usr_irq;
+    logic [N_USR_IRQ-1:0] usr_irq;
     AXI4 axi_main  ();
     AXI4S axis_dyn_out [N_SCHAN] (.*);
     AXI4S axis_dyn_in [N_SCHAN] (.*);
@@ -87,7 +87,7 @@ module dcpl_static #(
     end
 
     // Slicing    
-    logic_reg_array_static #(.N_STAGES(N_STAGES_0), .DATA_BITS(15)) inst_s0_usr_irq (.aclk(aclk), .aresetn(aresetn), .s_data(usr_irq), .m_data(m_usr_irq));
+    logic_reg_array_static #(.N_STAGES(N_STAGES_0), .DATA_BITS(N_USR_IRQ)) inst_s0_usr_irq (.aclk(aclk), .aresetn(aresetn), .s_data(usr_irq), .m_data(m_usr_irq));
     axi_reg_array_static #(.N_STAGES(N_STAGES_0)) inst_s0_axi_main (.aclk(aclk), .aresetn(aresetn), .s_axi(s_axi_main), .m_axi(axi_main));
     for(genvar i = 0; i < N_SCHAN; i++) begin
         axis_reg_array_static #(.N_STAGES(N_STAGES_0)) inst_s0_axis_dyn_out (.aclk(aclk), .aresetn(aresetn), .s_axis(s_axis_dyn_out[i]), .m_axis(axis_dyn_out[i]));
@@ -102,7 +102,7 @@ module dcpl_static #(
     wback_dma inst_wback_adj (.aclk(aclk), .aresetn(aresetn), .s_wback(wback), .m_dma_wr(dma_wb_req), .m_axis_wback(axis_wb));
 
     // Decoupling
-    logic_decoupler_static #(.DATA_BITS(15)) inst_s1_usr_irq (.decouple(decouple[N_REG_STA_DCPL-1]), .s_data(s_usr_irq), .m_data(usr_irq));
+    logic_decoupler_static #(.DATA_BITS(N_USR_IRQ)) inst_s1_usr_irq (.decouple(decouple[N_REG_STA_DCPL-1]), .s_data(s_usr_irq), .m_data(usr_irq));
     axi_decoupler_static inst_s1_axi_main (.decouple(decouple[N_REG_STA_DCPL-1]), .s_axi(axi_main), .m_axi(m_axi_main));
 
     for(genvar i = 0; i < N_SCHAN; i++) begin

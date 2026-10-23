@@ -42,6 +42,76 @@ puts "[color $clr_flow "**"]"
 
 open_checkpoint "$dcp_dir/shell_linked.dcp"
 
+# Network-3 inter-vFPGA P2P: compile the shell's xpm_nmu_strm/xpm_nsu_strm NoC
+# endpoints + their create_noc_connection paths into the device NoC. This runs on
+# the LINKED design (design_static supplies CIPS -> the NoC clock/config), which a
+# shell-only synth cannot do. If it fails, the likely cause is that design_static
+# was built with no reservation for the RM's P2P NoC paths (see build notes).
+if {$cfg(build_static) eq 1 && $cfg(fdev) eq "v80" && $cfg(en_p2p) eq 1 && $cfg(n_reg) > 1} {
+    puts "[color $clr_flow "** Network-3 P2P: running validate_noc on the linked design ..."]"
+    if {[catch {validate_noc} p2p_noc_err]} {
+        puts "[color $clr_error "** validate_noc FAILED: $p2p_noc_err"]"
+        error "Network-3 P2P NoC validation failed; see log."
+    }
+    puts "[color $clr_flow "** Network-3 P2P: validate_noc completed"]"
+}
+
+# Vivado 2023.2's generated Aurora GT XDC initially constrains the U280
+# aurora_qsfp1 GT shape into the PCIe/XDMA quad. The later zaurora XDC moves
+# the GT cells to QSFP1, but the linked checkpoint can still restore stale
+# top-level port placement on the PCIe GT pads. Re-assert both port pins and
+# GT channel LOCs after opening the checkpoint so place_design sees a coherent
+# shape.
+if {$cfg(en_aurora_1) eq 1} {
+    puts "WARNING: Re-applying Aurora QSFP1 GT port and channel placement after checkpoint restore."
+
+    foreach {port pin} {
+        gt1_refclk_n M43
+        gt1_refclk_p M42
+        gt1_rxn_in[0] G54
+        gt1_rxn_in[1] F52
+        gt1_rxn_in[2] E54
+        gt1_rxn_in[3] D52
+        gt1_rxp_in[0] G53
+        gt1_rxp_in[1] F51
+        gt1_rxp_in[2] E53
+        gt1_rxp_in[3] D51
+        gt1_txn_out[0] G49
+        gt1_txn_out[1] E49
+        gt1_txn_out[2] C49
+        gt1_txn_out[3] A50
+        gt1_txp_out[0] G48
+        gt1_txp_out[1] E48
+        gt1_txp_out[2] C48
+        gt1_txp_out[3] A49
+    } {
+        set p [get_ports -quiet [list $port]]
+        if {[llength $p] != 1} {
+            puts "WARNING: Expected one Aurora QSFP1 port '$port', found [llength $p]."
+            continue
+        }
+        catch {reset_property LOC $p}
+        catch {reset_property PACKAGE_PIN $p}
+        set_property PACKAGE_PIN $pin $p
+        set_property LOC $pin $p
+    }
+
+    foreach {idx loc} {
+        3 GTYE4_CHANNEL_X0Y44
+        2 GTYE4_CHANNEL_X0Y45
+        1 GTYE4_CHANNEL_X0Y46
+        0 GTYE4_CHANNEL_X0Y47
+    } {
+        set c [get_cells -hierarchical -quiet -filter "NAME =~ *inst_aurora*gen_channel_container\[24\].*gen_gtye4_channel_inst\[$idx\].GTYE4_CHANNEL_PRIM_INST"]
+        if {[llength $c] != 1} {
+            puts "WARNING: Expected one Aurora QSFP1 GT channel cell for generated index $idx, found [llength $c]."
+            continue
+        }
+        catch {reset_property LOC $c}
+        set_property LOC $loc $c
+    }
+}
+
 if {$cfg(build_opt) eq 1} {
     opt_design -directive Explore
 } else {
@@ -54,6 +124,21 @@ if {$cfg(en_aurora_1) ne 1} {
 }
 puts "[color $clr_flow "** Shell opt_design completed"]"
 puts "[color $clr_flow "**"]"
+
+# Milestone B.10 — inter-vFPGA P2P NoC endpoint placement is handled ENTIRELY at
+# BD build time now; pnr_shell does NO P2P endpoint/fabric placement.
+#
+# The whole B.2..B.9 place-time trial-and-error (endpoint pinning, per-SLR fabric
+# splits, PHYSICAL_LOC) hit the bedrock DFX rule HDPR-116: axi_noc_p2p lives in
+# design_static, and static logic may NOT be placed inside the reconfigurable
+# pblock_inst_shell (SLR1/2). So the static NoC endpoints MUST live in SLR0 — but
+# SLR0 only has 28 NOCMU tiles, and N=32 sender NMUs (+32 receiver NSUs) overflow
+# it. The fix (B.10) is SEND-side NMU sharing to mirror the receive hubs: cr_p2p_noc
+# builds only P2P_N_SEND (=8) shared sender NMUs + P2P_N_HUB (=8) receiver NSUs = 16
+# static endpoints, which fit SLR0's tile cap and the 18870-SLL budget and default
+# to SLR0 legally with no pblock/PHYSICAL_LOC needed. Per-vFPGA fan-in/out is done
+# in fabric by axis_p2p_arbiter (K->1 send) and mm_to_axis_demux (1->K receive).
+# => no P2P pnr_shell block required.
 
 if {$cfg(build_opt) eq 1} {
     # Auto_1 is not available on Versal devices starting with Vivado 2024.2; Coyote replaces it with AggressiveExplore

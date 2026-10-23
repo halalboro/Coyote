@@ -35,18 +35,19 @@
  * multiple interrupts being sent at the same time, but QDMA only supports one at a time.
  */
 module qdma_interrupt_wrapper #(
-    parameter integer N_IRQ = 16 
+    parameter integer N_IRQ    = 16,
+    parameter integer VEC_BITS = 5    // width of the serialized interrupt vector index
 ) (
     input  logic                aclk,
     input  logic                aresetn,
 
-    input  logic [N_IRQ-1:0]    usr_irq, 
-    
+    input  logic [N_IRQ-1:0]    usr_irq,
+
     input  logic                usr_irq_ack,
     input  logic                usr_irq_fail,
     output logic                usr_irq_valid,
-    output logic [4:0]          usr_irq_vec, 
-    output logic [12:0]         usr_irq_fnc    
+    output logic [VEC_BITS-1:0] usr_irq_vec,
+    output logic [12:0]         usr_irq_fnc
 );
 
     // FSM:
@@ -57,7 +58,7 @@ module qdma_interrupt_wrapper #(
     typedef enum logic[1:0]  {ST_IDLE, ST_SEND, ST_WAIT, ST_DONE} state_t;
     logic [1:0] state_C, state_N;
 
-    logic [4:0] idx_C, idx_N;
+    logic [VEC_BITS-1:0] idx_C, idx_N;
 
     // REG
     always_ff @(posedge aclk) begin

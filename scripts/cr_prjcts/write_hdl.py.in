@@ -139,8 +139,23 @@ if arg1 == 1 :
     renderhdl(env_common, 'shell_ctrl', shell_dir, 0)
 
     # Shell clock (Versal-only; see templates/versal/shell_clk_tmplt.txt for more details)
-    if cfg['fpga_arch'] == 'versal': 
+    if cfg['fpga_arch'] == 'versal':
         renderxdc(env_platform, 'shell_clk', f'{proj_dir}/xdc')
+
+    # Inter-vFPGA P2P NoC (Network-3): create_noc_connection XDC for the shell's
+    # xpm_nmu_strm/xpm_nsu_strm endpoints. Applied at synthesis_pre (see cr_shell).
+    if cfg['fdev'] == 'v80' and cfg['en_p2p'] == 1 and cfg['n_reg'] > 1:
+        renderxdc(env_platform, 'p2p_noc_conn', f'{proj_dir}/xdc')
+
+    # Host DMA over NoC (Network-3): create_noc_connection XDC for the shell's
+    # host-DMA xpm_nmu_strm/xpm_nsu_strm endpoints. Applied at synthesis_pre (cr_shell).
+    if cfg['fdev'] == 'v80' and cfg.get('en_host_noc', 0) == 1 and cfg['n_reg'] > 1:
+        renderxdc(env_platform, 'host_noc_conn', f'{proj_dir}/xdc')
+
+    # Control/descriptor over NoC (Network-3): create_noc_connection XDC for the
+    # per-vFPGA SQ/CQ + notify meta-stream endpoints. Applied at synthesis_pre (cr_shell).
+    if cfg['fdev'] == 'v80' and cfg.get('en_host_noc', 0) == 1 and cfg['n_reg'] > 1:
+        renderxdc(env_platform, 'host_ctrl_noc_conn', f'{proj_dir}/xdc')
 
     # Dynamic layer
     renderhdl(env_common, 'dynamic_top', shell_dir, 0)

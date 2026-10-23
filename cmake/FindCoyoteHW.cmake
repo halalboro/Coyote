@@ -242,6 +242,15 @@ set(EOS_TIME 1000000 CACHE STRING "End of startup time.")
 # Future: replace ring with hardened NoC AXIS mesh (needs static rebuild).
 set(EN_P2P 0 CACHE STRING "Enable inter-vFPGA AXI-Stream ring (only meaningful when N_REGIONS>1)")
 
+# Route the per-vFPGA HOST DMA datapath over the hardened NoC instead of fabric SLLs.
+# On the V80 (3-SLR SSIT), the shell (SLR0) <-> vFPGA (SLR1/SLR2) host streams cross
+# the die as fabric Super-Long-Lines; that SLL budget caps the design at ~18-19 vFPGAs.
+# With EN_HOST_NOC=1 the shell's per-vFPGA host AXIS is carried by xpm_nmu_strm/nsu_strm
+# NoC endpoints (Network-3, reusing the EN_P2P hub-sharing primitives) so the crossing
+# rides dedicated NoC silicon (~zero SLL) -> restores N=32. Phase 1 moves DATA streams;
+# control/descriptor path stays in fabric (see docs/superpowers/plans/2026-09-18-host-vfpga-noc-datapath.md).
+set(EN_HOST_NOC 0 CACHE STRING "Route host DMA streams over the hardened NoC (V80 only; scales past the ~19-vFPGA SLL ceiling)")
+
 # Enable explicit floor-planning & reconfiguration of the shell.
 # With a floorplan, it's possible to reuse an existing routed checkpoint of the static layer, as well as do run-time shell reconfiguration
 # However, if disabled, it may be possible to achieve higher clock frequencies and better timing closure

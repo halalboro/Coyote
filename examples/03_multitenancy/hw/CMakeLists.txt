@@ -33,8 +33,12 @@ find_package(CoyoteHW REQUIRED)
 project(example_03_multitenancy)
 message("*** Coyote Example 3: Multiple, Parallel AES Encryption Blocks [Hardware] ***")
 
-# Number of vFPGAs (parallel user applications)
-set(N_REGIONS 4)
+# Number of vFPGAs (parallel user applications).
+# Default 32, but honor a command-line -DN_REGIONS=<n> override (find_package sets
+# the cache default to 1; a plain set() here would otherwise clobber -D).
+if(NOT N_REGIONS OR N_REGIONS EQUAL 1)
+    set(N_REGIONS 32)
+endif()
 
 # Enables host memory streams
 set(EN_STRM 1)
@@ -48,12 +52,16 @@ validation_checks_hw()
 # Loads the four user applications (more on the meaning of C0 in Example 10)
 # src corresponds to the folder which includes the vfpga_top.svh file and the RTL/HLS kernel
 # There is absolutely no requirement that the individual applications point to different source folders.
-load_apps (
-    VFPGA_C0_0 "src"
-    VFPGA_C0_1 "src"
-    VFPGA_C0_2 "src"
-    VFPGA_C0_3 "src"
-)
+# 32 small loopback vFPGAs (src_min) for the shared-hub P2P mesh bring-up.
+# The heavy AES logic in "src" does not fit 32x and does not exercise P2P.
+# Build the per-vFPGA app list dynamically so it scales with N_REGIONS (all src_min,
+# single config C0). Avoids hardcoding a fixed vFPGA count.
+math(EXPR _p2p_n_minus1 "${N_REGIONS} - 1")
+set(_p2p_apps "")
+foreach(_i RANGE 0 ${_p2p_n_minus1})
+    list(APPEND _p2p_apps VFPGA_C0_${_i} "src_min")
+endforeach()
+load_apps(${_p2p_apps})
 
 # Create the hardware project
 create_hw()

@@ -24,6 +24,16 @@
 # SOFTWARE.
 ######################################################################################
 
+# Map a global control-MI index to its BD interface-pin path. Without cascade
+# (ic0_mi <= 16) all MIs live on the single axi_interconnect_0. With cascade,
+# global index g lands on leaf (g / max_mi), local MI (g % max_mi).
+proc cyt_ctrl_mi_pin { g cascade max_mi } {
+    if {$cascade} {
+        return [format "axi_ic_leaf_%d/M%02d_AXI" [expr {$g / $max_mi}] [expr {$g % $max_mi}]]
+    }
+    return [format "axi_interconnect_0/M%02d_AXI" $g]
+}
+
 # Shell ctrl layer
 proc cr_bd_design_ctrl { parentCell } {
   upvar #0 cfg cnfg
@@ -220,21 +230,55 @@ proc cr_bd_design_ctrl { parentCell } {
 # Create interconnect and components
 ########################################################################################################
   
-  # AXI interconnect
+  # AXI interconnect (control crossbar).
+  #
+  # A single SmartConnect caps at 16 MI in high-performance mode, so once the
+  # control fan-out (ic0_mi) exceeds 16 we CASCADE: the root SmartConnect keeps
+  # the xclk->aclk crossing (S00=axi_main on xclk, its MIs on aclk) and drives
+  # one leaf SmartConnect per group of <=16 MIs. The leaves are single-clock
+  # (aclk) and carry the actual control ports. Address routing through the tree
+  # is derived automatically from the /axi_main address segments (unchanged).
   if {$cnfg(en_avx) eq 1} {
     set ic0_mi [expr {2*$cnfg(n_reg) + 1}]
   } else {
     set ic0_mi [expr {$cnfg(n_reg) + 1}]
   }
 
+  set ctrl_max_mi 16
+  set ctrl_cascade [expr {$ic0_mi > $ctrl_max_mi}]
+  if {$ctrl_cascade} {
+    set ctrl_n_leaf [expr {($ic0_mi + $ctrl_max_mi - 1) / $ctrl_max_mi}]
+    set root_mi $ctrl_n_leaf
+  } else {
+    set ctrl_n_leaf 0
+    set root_mi $ic0_mi
+  }
+
   set axi_interconnect_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 axi_interconnect_0 ]
   set cmd "set_property -dict \[list \
     CONFIG.NUM_CLKS {2} \
-    CONFIG.NUM_MI {$ic0_mi} \
+    CONFIG.NUM_MI {$root_mi} \
     CONFIG.NUM_SI {1} \
   ] \[get_bd_cells axi_interconnect_0]"
-  eval $cmd 
+  eval $cmd
   set_property CONFIG.ADVANCED_PROPERTIES {__experimental_features__ {disable_low_area_mode 1} __view__ {functional {S00_Entry {SUPPORTS_WRAP 1 SUPPORTS_NARROW_BURST 1}}}} $axi_interconnect_0
+
+  # Leaf SmartConnects (single aclk domain), <=16 MI each.
+  if {$ctrl_cascade} {
+    common::send_msg_id "CYT_CTRL-01" "INFO" \
+      "Control crossbar cascaded: $ic0_mi MIs across $ctrl_n_leaf leaf SmartConnects (16-MI SmartConnect limit)"
+    for {set k 0} {$k < $ctrl_n_leaf} {incr k} {
+      set rem [expr {$ic0_mi - $k * $ctrl_max_mi}]
+      set lmi [expr {$rem > $ctrl_max_mi ? $ctrl_max_mi : $rem}]
+      create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 axi_ic_leaf_$k
+      set cmd "set_property -dict \[list \
+        CONFIG.NUM_CLKS {1} \
+        CONFIG.NUM_MI {$lmi} \
+        CONFIG.NUM_SI {1} \
+      ] \[get_bd_cells axi_ic_leaf_$k]"
+      eval $cmd
+    }
+  }
   
   # Clocking
   create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wizard:1.0 clk_wiz_0
@@ -264,23 +308,31 @@ proc cr_bd_design_ctrl { parentCell } {
 # Create interface connections
 ########################################################################################################
   
-  connect_bd_intf_net -intf_net axi_interconnect_0_M00_AXI [get_bd_intf_ports axi_cnfg] [get_bd_intf_pins axi_interconnect_0/M00_AXI]
+  # axi_main -> root SI
   connect_bd_intf_net -intf_net axi_interconnect_0_S00_AXI [get_bd_intf_ports axi_main] [get_bd_intf_pins axi_interconnect_0/S00_AXI]
 
+  # root MIs -> leaf SIs (cascade only)
+  if {$ctrl_cascade} {
+    for {set k 0} {$k < $ctrl_n_leaf} {incr k} {
+      connect_bd_intf_net [get_bd_intf_pins axi_interconnect_0/M[format %02d $k]_AXI] [get_bd_intf_pins axi_ic_leaf_$k/S00_AXI]
+    }
+  }
+
+  # Global MI index 0 = axi_cnfg; then per-region control ports. cyt_ctrl_mi_pin
+  # resolves each global index to the root (non-cascade) or the right leaf MI.
+  connect_bd_intf_net [get_bd_intf_ports axi_cnfg] [get_bd_intf_pins [cyt_ctrl_mi_pin 0 $ctrl_cascade $ctrl_max_mi]]
+
   if {$cnfg(en_avx) eq 1} {
-    for {set i 0}  {$i < $cnfg(n_reg)} {incr i} { 
-      set j [expr {$i*2 + 1}]
-      set cmd [format "connect_bd_intf_net -intf_net axi_interconnect_0_M%02d_AXI \[get_bd_intf_ports axi_ctrl_%d] \[get_bd_intf_pins axi_interconnect_0/M%02d_AXI]" $j $i $j]
-      eval $cmd 
-      set j [expr {$i*2 + 2}]
-      set cmd [format "connect_bd_intf_net -intf_net axi_interconnect_0_M%02d_AXI \[get_bd_intf_ports axim_ctrl_%d] \[get_bd_intf_pins axi_interconnect_0/M%02d_AXI]" $j $i $j]
-      eval $cmd 
+    for {set i 0}  {$i < $cnfg(n_reg)} {incr i} {
+      set g [expr {$i*2 + 1}]
+      connect_bd_intf_net [get_bd_intf_ports axi_ctrl_$i]  [get_bd_intf_pins [cyt_ctrl_mi_pin $g $ctrl_cascade $ctrl_max_mi]]
+      set g [expr {$i*2 + 2}]
+      connect_bd_intf_net [get_bd_intf_ports axim_ctrl_$i] [get_bd_intf_pins [cyt_ctrl_mi_pin $g $ctrl_cascade $ctrl_max_mi]]
     }
   } else {
-    for {set i 0}  {$i < $cnfg(n_reg)} {incr i} { 
-      set j [expr {$i + 1}]
-      set cmd [format "connect_bd_intf_net -intf_net axi_interconnect_0_M%02d_AXI \[get_bd_intf_ports axi_ctrl_%d] \[get_bd_intf_pins axi_interconnect_0/M%02d_AXI]" $j $i $j]
-      eval $cmd 
+    for {set i 0}  {$i < $cnfg(n_reg)} {incr i} {
+      set g [expr {$i + 1}]
+      connect_bd_intf_net [get_bd_intf_ports axi_ctrl_$i] [get_bd_intf_pins [cyt_ctrl_mi_pin $g $ctrl_cascade $ctrl_max_mi]]
     }
   }
 
@@ -316,7 +368,17 @@ proc cr_bd_design_ctrl { parentCell } {
   
   connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_ports aclk]
   connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins axi_interconnect_0/aclk1]
-  
+
+  # Leaf SmartConnects live entirely in the aclk domain (clk_out1), reset by the
+  # aclk-synchronous proc_sys_reset_a. Root MIs -> leaf SIs are already aclk, so
+  # the xclk->aclk crossing happens once, in the root.
+  if {$ctrl_cascade} {
+    for {set k 0} {$k < $ctrl_n_leaf} {incr k} {
+      connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins axi_ic_leaf_$k/aclk]
+      connect_bd_net [get_bd_pins proc_sys_reset_a/peripheral_aresetn] [get_bd_pins axi_ic_leaf_$k/aresetn]
+    }
+  }
+
 ########################################################################################################
 # Create address segments
 ########################################################################################################

@@ -369,6 +369,20 @@ package lynxTypes;
     localparam integer N_REGIONS = {{ cnfg.n_reg }};
     localparam integer N_REGIONS_BITS = clog2s({{ cnfg.n_reg }});
 
+    // Width of the parallel user-interrupt vector (one IRQ line per vFPGA).
+    // Versal serializes it via qdma_interrupt_wrapper (usr_irq_vec is 5 bits ->
+    // up to 32), so it scales with N_REGIONS. UltraScale+ drives XDMA's fixed
+    // 16-line usr_irq (15 user + 1 PR), so it stays 15 there.
+{% if cnfg.fpga_arch == 'versal' %}
+    localparam integer N_USR_IRQ = {{ cnfg.n_reg }};
+{% else %}
+    localparam integer N_USR_IRQ = 15;
+{% endif %}
+    // Serialized QDMA interrupt-vector width: enough to index N_USR_IRQ user IRQs
+    // + 1 PR IRQ, but never narrower than the legacy 5 bits (32 vectors) so
+    // existing <=31-region builds are unchanged. N=32 -> 6 bits.
+    localparam integer USR_IRQ_VEC_BITS = (clog2s(N_USR_IRQ + 1) < 5) ? 5 : clog2s(N_USR_IRQ + 1);
+
     localparam integer N_OUTSTANDING = {{ cnfg.n_outs }};
     localparam integer N_OUTSTANDING_REGION = {{ 4 * cnfg.n_outs }};
 
@@ -398,6 +412,32 @@ package lynxTypes;
     localparam integer RDMA_FLOW = {{ cnfg.en_rdma }};
     localparam integer TCP_FLOW = {{ cnfg.en_tcp }};
     localparam integer P2P_FLOW = {{ cnfg.en_p2p }};
+    // Inter-vFPGA P2P NoC (Network-3). tdest carries the target vFPGA id; it is the
+    // NoC dest-id width for the shell's xpm_nmu_strm/xpm_nsu_strm endpoints. No MM
+    // addressing params: routing is by tdest over create_noc_connection paths.
+    localparam integer P2P_DEST_BITS = clog2s({{ cnfg.n_reg }});
+    // Hub sharing: a streaming NMU/NSU caps at 16 NoC connections, and 1 endpoint
+    // per vFPGA also over-crowds the NoC column (routing congestion). So senders
+    // group into P2P_N_SEND NMUs (K->1 axis_p2p_arbiter) and receivers into
+    // P2P_N_HUB NSUs (1->K axis_p2p_demux). Capped small (<=4) to minimise endpoints.
+    // Any-to-any = P2P_N_SEND x P2P_N_HUB connections; each endpoint has <=max(S,M).
+    localparam integer P2P_N_HUB   = (N_REGIONS < 4) ? N_REGIONS : 4;
+    localparam integer P2P_HUB_K   = (N_REGIONS + P2P_N_HUB - 1) / P2P_N_HUB;
+    localparam integer P2P_N_SEND  = (N_REGIONS < 4) ? N_REGIONS : 4;
+    localparam integer P2P_SEND_K  = (N_REGIONS + P2P_N_SEND - 1) / P2P_N_SEND;
+    // Host DMA over NoC (Network-3). Unlike the P2P mesh (any-to-any), host<->vFPGA is
+    // a 1:N STAR: one host-side endpoint pair (near CPM5, SLR0) <-> N vFPGAs (SLR1/2),
+    // routed by tdest = target vFPGA id (h2c) / 0 (c2h). Reuses axis_p2p_arbiter/demux.
+    localparam integer HOSTNOC_FLOW     = {{ cnfg.en_host_noc }};
+    localparam integer HOSTNOC_DEST_BITS = clog2s({{ cnfg.n_reg }});
+    // vFPGA-side hubs (h2c receive demux 1->K, c2h send arbiter K->1), capped <=4 to
+    // keep each streaming endpoint under the 16-connection NoC cap.
+    localparam integer HOSTNOC_N_RECV   = (N_REGIONS < 4) ? N_REGIONS : 4;
+    localparam integer HOSTNOC_RECV_K   = (N_REGIONS + HOSTNOC_N_RECV - 1) / HOSTNOC_N_RECV;
+    localparam integer HOSTNOC_N_SEND   = (N_REGIONS < 4) ? N_REGIONS : 4;
+    localparam integer HOSTNOC_SEND_K   = (N_REGIONS + HOSTNOC_N_SEND - 1) / HOSTNOC_N_SEND;
+    // Host-side endpoints (SLR0, near CPM5): 1 pair suffices for PCIe Gen5x8 aggregate BW.
+    localparam integer HOSTNOC_N_HOST   = 1;
     localparam integer N_WBS = {{ cnfg.n_wbs }};
     localparam integer QSFP = {{ cnfg.qsfp }};
 
