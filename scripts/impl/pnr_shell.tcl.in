@@ -47,7 +47,11 @@ if {$cfg(build_opt) eq 1} {
 } else {
     opt_design
 }
-write_checkpoint -force "$dcp_dir/shell_opted.dcp"
+if {$cfg(en_aurora_1) ne 1} {
+    write_checkpoint -force "$dcp_dir/shell_opted.dcp"
+} else {
+    puts "WARNING: Skipping Aurora QSFP1 intermediate shell_opted checkpoint; Vivado 2023.2 can segfault while writing this post-opt DCP."
+}
 puts "[color $clr_flow "** Shell opt_design completed"]"
 puts "[color $clr_flow "**"]"
 

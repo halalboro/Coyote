@@ -180,6 +180,18 @@ set(EN_AURORA_1 0 CACHE STRING "Enable Aurora 64B/66B on QSFP1")
 # Number of Aurora streams per vFPGA (currently always 1; reserved for future fan-out)
 set(N_AURORA_AXI 1 CACHE STRING "Number of Aurora streams per vFPGA")
 
+# QLINK: raw GTY on QSFP1, single lane at 10.3125 Gbps with 8B/10B, for
+# low-latency QEC syndrome transport (examples/16_qlink). Deliberately presents
+# the same 256-bit AXIS interface to the vFPGA that EN_AURORA_1 does, so no
+# dynamic/user template changes are needed -- only shell_top gains a branch.
+set(EN_QLINK_GTY 0 CACHE STRING "Enable QLINK raw-GTY link on QSFP1")
+
+# Build a QLINK self-test image: near-end PMA loopback, so a single card proves
+# its own GT + framing + protocol path with no cable and no peer attached. The
+# only way to distinguish "my receiver is broken" from "the far card is not
+# transmitting" without a scope.
+set(EN_QLINK_LOOPBACK 0 CACHE STRING "QLINK near-end PMA loopback (self-test image)")
+
 ##
 ## AVED MANAGEMENT CONTROL (AMC) firmware bringup on V80
 ##
@@ -1039,6 +1051,15 @@ macro(validation_checks_hw)
         endif()
         if(EN_AURORA_1 AND EN_NET_1)
             message(FATAL_ERROR "EN_AURORA_1 and EN_NET_1 both enabled; both want the QSFP1 cage.")
+        endif()
+        # QLINK drives the same cage, and reuses the same vFPGA-facing ports as
+        # Aurora, so it cannot coexist with either.
+        if(EN_QLINK_GTY AND EN_NET_1)
+            message(FATAL_ERROR "EN_QLINK_GTY and EN_NET_1 both enabled; both want the QSFP1 cage.")
+        endif()
+        if(EN_QLINK_GTY AND EN_AURORA_1)
+            message(FATAL_ERROR "EN_QLINK_GTY and EN_AURORA_1 both enabled; both want the QSFP1 cage "
+                                "and the same vFPGA AXIS ports.")
         endif()
         if(EN_AMC AND NOT FDEV_NAME STREQUAL "v80")
             message(FATAL_ERROR "EN_AMC=1 is only supported on V80 (FDEV_NAME=v80).")

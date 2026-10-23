@@ -19,6 +19,7 @@ set(TARGET_DIR "${CMAKE_SOURCE_DIR}/src/")
 
 set(EXEC test)
 add_executable(${EXEC} ${TARGET_DIR}/main.cpp)
+target_include_directories(${EXEC} PRIVATE ${TARGET_DIR})
 target_link_libraries(${EXEC} PUBLIC Coyote)
 
 find_package(Boost REQUIRED COMPONENTS program_options)

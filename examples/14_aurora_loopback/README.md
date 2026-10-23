@@ -81,14 +81,18 @@ after both are programmed to re-trigger Aurora's init handshake).
 On **clara** (RX, arm first to be ready when rose starts sending):
 
 ```bash
-sudo ./test --role rx --beats 1024
+sudo ./test rx
 ```
 
 On **rose** (TX, fires after RX is armed):
 
 ```bash
-sudo ./test --role tx --beats 1024
+sudo ./test tx
 ```
+
+Both default to 1024 beats (32 KiB); use `--beats` to change. The receiver arms
+and then waits up to 60 s for a sender (`--wait` to change), so there's no rush
+to start TX. `./test --help` lists every mode and option.
 
 Expected output on clara:
 
@@ -102,6 +106,34 @@ Arming RX...
 [RX result] beats=1024 mismatches=0
 *** PASS: 1024 beats received with no mismatch ***
 ```
+
+## Latency benchmark
+
+Round-trip latency across transfer sizes. One card reflects, the other measures.
+
+```bash
+sudo ./test echo     # reflector card
+sudo ./test bench    # measuring card
+```
+
+Defaults sweep 64 B to 64 KiB, 1000 iterations per size. Override with
+`--iters`, `--min`, `--max`. Output is a table of `head` and `full` round-trip
+latency in ns (min / median / p99) per size, plus an estimated one-way
+bandwidth.
+
+- **head** — first beat out to first echoed beat back. Roughly size independent:
+  wire, Aurora cores, CDC FIFOs.
+- **full** — first beat out to last echoed beat back. Adds serialisation time, so
+  it grows linearly once the payload exceeds the pipeline depth.
+
+Both timestamps are taken by one free-running `aclk` counter on the measuring
+card, so no clock synchronisation between hosts is needed. This is also why the
+measurement is a round trip: rose and clara have independent oscillators and no
+PTP, so a one-way figure between them would be meaningless at sub-microsecond
+scale. Halve the round trip for a one-way estimate.
+
+The reflector adds exactly one `aclk` cycle (2.5 ns at `ACLK_F=400`) which is
+included in both figures.
 
 ## What this validates
 

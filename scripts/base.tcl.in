@@ -109,6 +109,10 @@ set cfg(en_net)                 ${EN_NET}
 set cfg(en_net_raw)             ${EN_NET_RAW}
 set cfg(net_raw_vfpga_id)       ${NET_RAW_VFPGA_ID}
 set cfg(qsfp)                   ${QSFP}
+set cfg(en_aurora_1)            ${EN_AURORA_1}
+set cfg(n_aurora_axi)           ${N_AURORA_AXI}
+set cfg(en_qlink_gty)           ${EN_QLINK_GTY}
+set cfg(en_qlink_loopback)      ${EN_QLINK_LOOPBACK}
 set cfg(en_amc)                 ${EN_AMC}
 set cfg(aved_iprepo)            "${AVED_IPREPO_PATH}"
 set cfg(pmtu)                   ${PMTU_BYTES}
