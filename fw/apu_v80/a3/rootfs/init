@@ -1,0 +1,11 @@
+#!/bin/busybox sh
+# Coyote V80 APU phase A3 initramfs /init: mount the pseudo filesystems, then a root shell
+# on the console (UART0 = ttyAMA0 = clara /dev/ttyUSB2).
+/bin/busybox --install -s
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+hostname coyote-a72
+echo
+echo "*** Coyote V80 A72: Linux $(uname -r) up ($(grep -c ^processor /proc/cpuinfo) CPU, $(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo) MB)"
+exec setsid cttyhack sh -l

@@ -29,11 +29,18 @@
 source "[file dirname [info script]]/cr_aved_mgmt.tcl" -notrace
 source "[file dirname [info script]]/cr_ddr4_v80.tcl" -notrace
 
-# on Versal. Sourcing is unconditional (no side effects until called).
 
 # Static layer
 proc cr_bd_design_static { parentCell } {
   upvar #0 cfg cnfg
+
+  # Default en_apu for build directories configured before EN_APU existed. Their
+  # generated base.tcl has no `set cfg(en_apu)`, and every en_apu test below would
+  # otherwise abort with "can't read cnfg(en_apu): no such element in array". A
+  # stale build dir should behave exactly as it did before, not fail.
+  if {![info exists cnfg(en_apu)]} {
+    set cnfg(en_apu) 0
+  }
 
   set design_name design_static
   set r5_platform_enabled [expr {
@@ -42,6 +49,23 @@ proc cr_bd_design_static { parentCell } {
   set r5_provider_enabled [expr {
     [info exists cnfg(en_v80_r5_provider)] && $cnfg(en_v80_r5_provider) eq 1
   }]
+
+  # DDR4 and its NoC route are needed INDEPENDENTLY by two consumers: the AMC
+  # (R5 code at 0x4000_0000 + shared memory at 0x0010_0000) and the APU (Linux
+  # RAM at 0x0200_0000). Either alone must bring the substrate up, so the shared
+  # parts -- DDR4 controller, M00_INI, the PMC->DDR load route, the host PCIe
+  # window -- are gated on the union, while the AMC-specific parts (GCQ, rpu_sc,
+  # the LPD NoC master) stay on en_amc. The APU's own port is FPD_CCI_NOC, which
+  # does not collide with the R5 coprocessor provider's M_AXI_LPD.
+  set amc_enabled [expr {$cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1}]
+  set apu_enabled [expr {$cnfg(fdev) eq "v80" && $cnfg(en_apu) eq 1}]
+  set ddr4_needed [expr {$amc_enabled || $apu_enabled}]
+
+  # NoC slave-port layout. S00-S02 are always CPM-ctrl / CPM-DMA / PMC; the LPD
+  # master (AMC) takes the next slot, then the four interleaved FPD CCI masters
+  # (APU). Indices are computed so an APU-only build packs down to S03..S06.
+  set noc_si_cci  [expr {3 + ($amc_enabled ? 1 : 0)}]
+  set noc_clk_cci [expr {5 + ($amc_enabled ? 1 : 0)}]
 
   common::send_msg_id "BD_TCL-003" "INFO" "Currently there is no design <$design_name> in project, so creating one..."
 
@@ -678,14 +702,53 @@ proc cr_bd_design_static { parentCell } {
   # channel (vFPGA ocm_mbx) uses to reach the R5's OCM @0xFFFC0000. Its clock
   # (s_axi_lpd_aclk) and the S_AXI_LPD interface are wired in cr_aved_mgmt.tcl,
   # which runs (and is validated) later in this same EN_AMC path.
-  if {$cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1} {
+  if {$ddr4_needed} {
     set_property -dict [list CONFIG.PS_PMC_CONFIG_APPLIED {1}] $versal_cips_0
     # PS_USE_S_AXI_LPD is a KEY inside the CONFIG.PS_PMC_CONFIG dict, not a
     # top-level CIPS parameter. Read-modify-write so all other keys are kept and
     # only the EN_AMC path enables the slave (non-AMC builds untouched).
     set _ppc [get_property CONFIG.PS_PMC_CONFIG $versal_cips_0]
-    dict set _ppc PS_USE_S_AXI_LPD 1
+    if {$amc_enabled} {
+      dict set _ppc PS_USE_S_AXI_LPD 1
+    }
+    # EN_APU: give the A72 a NoC MASTER so Linux can reach DDR4.
+    #
+    # CIPS interface names read <source>_<dest>, and only the outbound direction
+    # is a Master (probed on versal_cips v3.4, xcv80):
+    #   FPD_CCI_NOC_0..3  Master  FPD -> NoC   <- what the APU needs
+    #   LPD_AXI_NOC_0     Master  LPD -> NoC   (the R5's proven path)
+    #   NOC_FPD_AXI_0/1   SLAVE   NoC -> FPD   (inbound; NOT usable here)
+    #   NOC_FPD_CCI_0     SLAVE   NoC -> FPD
+    # PS_USE_NOC_FPD_AXI0 therefore gives a slave and fails with
+    # [BD 41-171] modes ... incompatible when wired to a NoC slave port.
+    #
+    # PS_USE_FPD_CCI_NOC is all-or-nothing: there is no PS_USE_FPD_CCI_NOC<n>,
+    # so it always exposes all four masters. Only _0 is wired below; the DDR MC
+    # limit [BD 41-3265] counts S->MC connections, not CIPS ports, so the extra
+    # ports cost nothing as long as they stay unconnected.
+    if {$apu_enabled} {
+      dict set _ppc PS_USE_FPD_CCI_NOC 1
+      # A2 prerequisite: an APU-mastered IPI for TF-A's Versal PM. TF-A defaults
+      # IPI_ID_APU to IPI_ID_0 (0xFF330000) and talks to the PMC over it. Without
+      # it, bitgen/PLM warn "APU IPIs are not enabled. Linux boot would not work."
+      # (versal_plm.tcl requires a psv_ipi cell whose C_CPU_NAME is psv_cortexa72),
+      # and the PLM logs "IPIs disabled: IPI-0 IPI-1 IPI-2". IPI3-6 stay on the R5s.
+      # Probed on versal_cips v3.4: MASTER range is {A72,CPM,R5_0,R5_1,S_AXI_GP0,
+      # S_AXI_GP2,S_AXI_GP4,S_AXI_ACP,S_AXI_ACE}; 'APU' is REJECTED, 'A72' accepted.
+      dict set _ppc PS_GEN_IPI0_ENABLE 1
+      dict set _ppc PS_GEN_IPI0_MASTER A72
+    }
     set_property CONFIG.PS_PMC_CONFIG $_ppc $versal_cips_0
+
+    # NOTE: BAR4 deliberately stays 256 MB, even for EN_APU.
+    # Enlarging it to 512 MB works in Vivado but is unusable on the host: the
+    # parent PCIe bridge's prefetchable window is sized during BOOT enumeration
+    # (on rose, 257 MB = 1 MB BAR0 + 256 MB BAR4). remove+rescan re-assigns
+    # device BARs but cannot grow a bridge window, so a 512 MB BAR4 comes back
+    # "can't assign; no space", BAR_SHELL_CONFIG never maps, and the driver
+    # faults in read_shell_config(). Recovering needs a full reboot, and only
+    # if the card retains its JTAG-loaded PDI across it. Keeping BAR4 at 256 MB
+    # keeps the SBR+remove+rescan reprogram shortcut working forever.
   }
 
   # The optional processor platform changes only the R5-0/LPD-facing CIPS
@@ -747,14 +810,24 @@ proc cr_bd_design_static { parentCell } {
   set _noc_num_si   3
   set _noc_num_clks 5
   set _noc_num_nmi  0
-  if {$cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1} {
-    # +S03 for CIPS LPD_AXI_NOC_0 (R5 master into the NoC)
-    # +M00_INI for routing to axi_noc_mc_ddr4_0 (single path: Versal allows
-    #   at most one S->MC connection per DDR controller, [BD 41-3265])
-    # +aclk5 for the LPD slave domain (pl0_ref_clk @ 100 MHz)
-    set _noc_num_si   4
-    set _noc_num_clks 6
-    set _noc_num_nmi  1
+  # +1 SI/clock for CIPS LPD_AXI_NOC_0 (the AMC's R5 master into the NoC).
+  if {$amc_enabled} {
+    incr _noc_num_si
+    incr _noc_num_clks
+  }
+  # +4 SI/clocks for the CIPS FPD_CCI_NOC masters (the APU into the NoC). All
+  # four are required, not just one: the NoC interleaves APU traffic across the
+  # CCI ports and rejects a partial connection with [axi_noc 1.1-1] "The CCIs
+  # are interleaved and must all be connected ... Expected 0 or 4 CCI inputs".
+  if {$apu_enabled} {
+    incr _noc_num_si   4
+    incr _noc_num_clks 4
+  }
+  # +M00_INI for routing to axi_noc_mc_ddr4_0 whenever DDR4 is present at all
+  # (single path: Versal allows at most one S->MC connection per DDR
+  # controller, [BD 41-3265]).
+  if {$ddr4_needed} {
+    set _noc_num_nmi 1
   }
   set_property -dict [list \
     CONFIG.MI_SIDEBAND_PINS {0} \
@@ -793,14 +866,16 @@ proc cr_bd_design_static { parentCell } {
 
   # CPM_PCIE_NOC_0 is used for shell and static layer registers
   set_property -dict [ list \
-    CONFIG.CONNECTIONS [expr {($cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1) ? \
+    CONFIG.CONNECTIONS [expr {$ddr4_needed ? \
         {M00_AXI {read_bw {8} write_bw {8} read_avg_burst {4} write_avg_burst {4}} M01_AXI {read_bw {8} write_bw {8} read_avg_burst {4} write_avg_burst {4}} M00_INI {read_bw {200} write_bw {200} read_avg_burst {16} write_avg_burst {16}}} : \
         {M00_AXI {read_bw {8} write_bw {8} read_avg_burst {4} write_avg_burst {4}} M01_AXI {read_bw {8} write_bw {8} read_avg_burst {4} write_avg_burst {4}}}}] \
-    CONFIG.DEST_IDS [expr {($cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1) ? \
+    CONFIG.DEST_IDS [expr {$ddr4_needed ? \
         {M01_AXI:0x0:M00_AXI:0x40:M00_INI:0x140} : \
         {M01_AXI:0x0:M00_AXI:0x40}}] \
-    CONFIG.REMAPS [expr {($cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1) ? \
-        {M00_INI {{0x2080A000000 0x00000000 0x02000000}}} : \
+    CONFIG.REMAPS [expr {$ddr4_needed ? \
+        (($cnfg(en_apu) eq 1) ? \
+            {M00_INI {{0x2080C000000 0x00000000 0x04000000}}} : \
+            {M00_INI {{0x2080A000000 0x00000000 0x02000000}}}) : \
         {}}] \
     CONFIG.NOC_PARAMS {} \
     CONFIG.CATEGORY {ps_pcie} \
@@ -845,7 +920,7 @@ proc cr_bd_design_static { parentCell } {
   ########################################################################################################
   # AMC additions: S03 = CIPS LPD master into NoC; M00_INI = single route to DDR4 MC
   ########################################################################################################
-  if {$cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1} {
+  if {$amc_enabled} {
     # S03_AXI: CIPS LPD_NOC_AXI_0 — R5 master traffic into the NoC. Single
     # path to M00_INI (DDR4 ctrl S00_INI); a second path through M01_INI
     # is rejected by validate_bd_design ([BD 41-3265] — max 1 NoC slave port
@@ -866,6 +941,17 @@ proc cr_bd_design_static { parentCell } {
     # Add M00_INI alongside the existing M03_AXI (debug hub) connection. Both
     # S02 (PMC) and S03 (LPD) share the single M00_INI -> DDR4/S00_INI path
     # (dest id 0xC0), which stays within the "1 slave port per DDR MC" rule.
+  }
+
+  if {$ddr4_needed} {
+    # S02_AXI (PMC master) -> DDR4. Needed by BOTH consumers: the PLM DMA-loads
+    # partitions into DDR4 during boot (amc.elf's 0x4000_0000 segment for the
+    # AMC; TF-A / U-Boot / kernel for the APU). Without this the load has no
+    # route and boot stalls ("PLM stalled", DONE LOW) -- the R5's own runtime
+    # path (S03/LPD) is not enough, because loading happens on the PMC master.
+    # M00_INI is added alongside the existing M03_AXI (debug hub) connection,
+    # sharing the single M00_INI -> DDR4/S00_INI path (dest id 0xC0) with every
+    # other master, which stays within the "1 slave port per DDR MC" rule.
     set_property -dict [ list \
       CONFIG.CONNECTIONS {M03_AXI {read_bw {1500} write_bw {1500} read_avg_burst {4} write_avg_burst {4}} M00_INI {read_bw {200} write_bw {200} read_avg_burst {16} write_avg_burst {16}}} \
       CONFIG.DEST_IDS {M03_AXI:0x120 M00_INI:0xC0} \
@@ -879,11 +965,36 @@ proc cr_bd_design_static { parentCell } {
       CONFIG.APERTURES {{0x0_0000_0000 4G}} \
       CONFIG.CATEGORY {pl_to_ddrmc} \
     ] [get_bd_intf_pins /axi_noc_0/M00_INI]
+  }
+
+  if {$amc_enabled} {
 
     # aclk5: LPD slave clock domain (pl0_ref_clk, 100 MHz)
     set_property -dict [ list \
       CONFIG.ASSOCIATED_BUSIF {S03_AXI} \
     ] [get_bd_pins /axi_noc_0/aclk5]
+  }
+
+  if {$apu_enabled} {
+    # The four CIPS FPD_CCI_NOC masters -- A72 traffic into the NoC, so Linux
+    # can reach DDR4. Each shares M00_INI (DDR4 ctrl S00_INI) at DEST_ID 0xC0
+    # with S00/S02 (and S03 when the AMC is in), exactly as PMC and LPD already
+    # share it; no new S->MC connection is created, so [BD 41-3265] does not
+    # apply. Bandwidth is split four ways to keep the aggregate comparable to
+    # the LPD port's. Indices pack down to S03..S06 when the AMC is absent.
+    for {set _i 0} {$_i < 4} {incr _i} {
+      set _si [format "S%02d_AXI" [expr {$noc_si_cci + $_i}]]
+      set_property -dict [ list \
+        CONFIG.CONNECTIONS {M00_INI {read_bw {400} write_bw {400} read_avg_burst {16} write_avg_burst {16}}} \
+        CONFIG.DEST_IDS {M00_INI:0xC0} \
+        CONFIG.NOC_PARAMS {} \
+        CONFIG.CATEGORY {ps_cci} \
+      ] [get_bd_intf_pins /axi_noc_0/$_si]
+
+      set_property -dict [ list \
+        CONFIG.ASSOCIATED_BUSIF $_si \
+      ] [get_bd_pins /axi_noc_0/aclk[expr {$noc_clk_cci + $_i}]]
+    }
   }
 
   # AXI SmartSwitch, connecting the NoC outputs to BD output interfaces
@@ -971,8 +1082,18 @@ proc cr_bd_design_static { parentCell } {
   # AMC path: CIPS LPD master into the NoC (only when EN_AMC=1 on V80).
   # PS_USE_NOC_LPD_AXI0=1 in the CIPS config exposes LPD_AXI_NOC_0 as a 128-bit
   # NoC slave port; we drop it into axi_noc_0/S03_AXI for routing to DDR4.
-  if {$cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1} {
+  if {$amc_enabled} {
     connect_bd_intf_net [get_bd_intf_pins versal_cips_0/LPD_AXI_NOC_0] [get_bd_intf_pins axi_noc_0/S03_AXI]
+  }
+
+  # PS_USE_FPD_CCI_NOC=1 exposes FPD_CCI_NOC_0..3, the APU's coherent NoC
+  # masters. All four go into axi_noc_0/S04..S07, which route to DDR4 via
+  # M00_INI -- the NoC interleaves across them and rejects a partial connection.
+  if {$apu_enabled} {
+    for {set _i 0} {$_i < 4} {incr _i} {
+      connect_bd_intf_net [get_bd_intf_pins versal_cips_0/FPD_CCI_NOC_$_i] \
+                          [get_bd_intf_pins axi_noc_0/[format "S%02d_AXI" [expr {$noc_si_cci + $_i}]]]
+    }
   }
 
   # Shell config & control --- axi_main
@@ -1086,7 +1207,7 @@ proc cr_bd_design_static { parentCell } {
   # LPD NoC slave clock is only used when AMC consumes LPD_AXI_NOC_0.
   # CIPS 3.4 (Vivado 2025.1) exposes a single shared `lpd_axi_noc_clk` for the
   # LPD-NoC interfaces, not a per-interface `lpd_noc_axi<N>_clk`.
-  if {$cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1} {
+  if {$amc_enabled} {
     connect_bd_net [get_bd_pins versal_cips_0/lpd_axi_noc_clk] [get_bd_pins axi_noc_0/aclk5]
   }
 
@@ -1107,7 +1228,17 @@ proc cr_bd_design_static { parentCell } {
       connect_bd_net [get_bd_pins proc_sys_reset_r5/peripheral_aresetn] [get_bd_pins r5_provider_clock_converter/aresetn]
     }
   }
-  
+
+  # FPD CCI NoC master clock. Pin names are per-port and NOT symmetric with the
+  # LPD port's `lpd_axi_noc_clk`: CIPS 3.4 calls these `fpd_cci_noc_axi<n>_clk`
+  # (probed).
+  if {$apu_enabled} {
+    for {set _i 0} {$_i < 4} {incr _i} {
+      connect_bd_net [get_bd_pins versal_cips_0/fpd_cci_noc_axi${_i}_clk] \
+                     [get_bd_pins axi_noc_0/aclk[expr {$noc_clk_cci + $_i}]]
+    }
+  }
+
   # Main shell clock
   connect_bd_net [get_bd_pins versal_cips_0/pl0_ref_clk] [get_bd_pins clk_wiz_0/clk_in1] 
 
@@ -1162,7 +1293,16 @@ proc cr_bd_design_static { parentCell } {
 ########################################################################################################
   # Shell & static config (host PCIe view)
   assign_bd_address -offset 0x020100000000 -range 1M -target_address_space [get_bd_addr_spaces versal_cips_0/CPM_PCIE_NOC_0] [get_bd_addr_segs axi_cnfg/Reg] -force
-  assign_bd_address -offset 0x020800000000 -range 256M -target_address_space [get_bd_addr_spaces versal_cips_0/CPM_PCIE_NOC_0] [get_bd_addr_segs axi_main/Reg] -force
+  # axi_main is 256 MB by default, which fills BAR4 entirely. Whenever DDR4 is
+  # present we carve a host window out of the top of BAR4, so axi_main must
+  # shrink to 128 MB to make room. cr_aved_mgmt.tcl re-asserts the same 128 MB
+  # for the AMC path (idempotent); this covers the APU-only path, which never
+  # calls it.
+  if {$ddr4_needed} {
+    assign_bd_address -offset 0x020800000000 -range 128M -target_address_space [get_bd_addr_spaces versal_cips_0/CPM_PCIE_NOC_0] [get_bd_addr_segs axi_main/Reg] -force
+  } else {
+    assign_bd_address -offset 0x020800000000 -range 256M -target_address_space [get_bd_addr_spaces versal_cips_0/CPM_PCIE_NOC_0] [get_bd_addr_segs axi_main/Reg] -force
+  }
 
   # APU/R5 view via M_AXI_FPD: vFPGA control regs at 0x4_0000_0000 (8G FPD window).
   # Only axi_main is reachable via smartconnect_1 (which now has S01 from M_AXI_FPD).
@@ -1202,8 +1342,10 @@ proc cr_bd_design_static { parentCell } {
   #   - GCQ + rpu_sc (host↔R5 mailbox)
   # Order matters: DDR4 must be instantiated before address-map assignments that
   # reference axi_noc_mc_ddr4_0's segments, and before validate_bd_design.
-  if {$cnfg(fdev) eq "v80" && $cnfg(en_amc) eq 1} {
+  if {$ddr4_needed} {
     cr_bd_design_ddr4_v80 ""
+  }
+  if {$amc_enabled} {
     cr_bd_design_aved_mgmt ""
 
     # Address map: DDR4 visible from CIPS LPD master via NoC route.
@@ -1213,7 +1355,9 @@ proc cr_bd_design_static { parentCell } {
     assign_bd_address -offset 0x00000000 -range 2G \
         -target_address_space [get_bd_addr_spaces versal_cips_0/LPD_AXI_NOC_0] \
         [get_bd_addr_segs axi_noc_mc_ddr4_0/S00_INI/C0_DDR_LOW0] -force
+  }
 
+  if {$ddr4_needed} {
     # PMC master view of DDR4 at 0x0..0x7FFF_FFFF (DDR_LOW0). The PLM DMA-loads
     # amc.elf's 0x4000_0000 segment through PMC_NOC_AXI_0; without this mapping
     # the load has no route and boot stalls. Mirrors the LPD mapping above; both
@@ -1222,15 +1366,42 @@ proc cr_bd_design_static { parentCell } {
         -target_address_space [get_bd_addr_spaces versal_cips_0/PMC_NOC_AXI_0] \
         [get_bd_addr_segs axi_noc_mc_ddr4_0/S00_INI/C0_DDR_LOW0] -force
 
-    # Host-side PCIe window onto DDR4 (BAR4 + 32 MB high portion). Maps PCIe
-    # 0x0208_0A00_0000..0x0208_0C00_0000 to DDR4 0x0..0x02000000. This is how
-    # the host reaches AMC's partition table + GCQ ring buffers in shared mem
-    # (AMC's HAL_RPU_SHARED_MEMORY_BASE_ADDR=0x00100000 lives inside this).
-    # Address chosen to be 32 MB aligned (REMAPS requirement) and above the
-    # axi_main (128 MB) + gcq_m2r (64 KB) regions.
-    assign_bd_address -offset 0x02080A000000 -range 32M \
-        -target_address_space [get_bd_addr_spaces versal_cips_0/CPM_PCIE_NOC_0] \
-        [get_bd_addr_segs axi_noc_mc_ddr4_0/S00_INI/C0_DDR_LOW0] -force
+    # APU (A72) view of DDR4 at 0x0..0x7FFF_FFFF, identical to the LPD and PMC
+    # mappings above and riding the same M00_INI -> DDR4 path. Linux's memory
+    # node lives at 0x0200_0000..0x4000_0000 inside this, clear of the AMC's
+    # shared memory (0x0010_0000) and amc.elf (0x4000_0000) when both are in.
+    if {$apu_enabled} {
+      # Every CCI master needs the mapping: APU traffic is interleaved across all
+      # four, so a segment on only _0 would leave three quarters undecoded.
+      for {set _i 0} {$_i < 4} {incr _i} {
+        assign_bd_address -offset 0x00000000 -range 2G \
+            -target_address_space [get_bd_addr_spaces versal_cips_0/FPD_CCI_NOC_$_i] \
+            [get_bd_addr_segs axi_noc_mc_ddr4_0/S00_INI/C0_DDR_LOW0] -force
+      }
+    }
+
+    # Host-side PCIe window onto DDR4. This is how the host reaches AMC's
+    # partition table + GCQ ring buffers in shared mem (AMC's
+    # HAL_RPU_SHARED_MEMORY_BASE_ADDR=0x00100000 lives inside it). Both offset
+    # and size must be self-aligned -- a NoC REMAPS requirement -- and must sit
+    # above the axi_main (128 MB) + gcq_m2r (64 KB) regions. Keep in sync with
+    # AMC_DDR_OFFS in driver/include/coyote_defs.h.
+    if {$apu_enabled} {
+      # EN_APU: 64 MB window at BAR4+192M (0x0208_0C00_0000), mapping DDR4
+      # 0x0..0x0400_0000. 192M is 64 MB-aligned as the NoC REMAPS requires, and
+      # 192M..256M is the free space above axi_main (128 MB) + gcq_m2r (64 KB).
+      # Linux lives at DDR 0x0200_0000, so its DTB (0x0200_0000), kernel
+      # (0x0208_0000) and initramfs (0x0300_0000) all fall inside this window:
+      # the host writes them straight to their final addresses, no staging copy.
+      assign_bd_address -offset 0x02080C000000 -range 64M \
+          -target_address_space [get_bd_addr_spaces versal_cips_0/CPM_PCIE_NOC_0] \
+          [get_bd_addr_segs axi_noc_mc_ddr4_0/S00_INI/C0_DDR_LOW0] -force
+    } else {
+      # Maps PCIe 0x0208_0A00_0000..0x0208_0C00_0000 to DDR4 0x0..0x0200_0000.
+      assign_bd_address -offset 0x02080A000000 -range 32M \
+          -target_address_space [get_bd_addr_spaces versal_cips_0/CPM_PCIE_NOC_0] \
+          [get_bd_addr_segs axi_noc_mc_ddr4_0/S00_INI/C0_DDR_LOW0] -force
+    }
   }
 
   validate_bd_design

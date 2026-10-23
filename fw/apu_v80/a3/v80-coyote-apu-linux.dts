@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Coyote V80 APU (Cortex-A72) Linux device tree -- phase A3.
+ *
+ * Reuses the A2 board tree (the single source of truth for CPUs, GIC, timer, PSCI and
+ * UART0) and changes only what differs for Linux:
+ *
+ *  - memory: 0x0200_0000-0x4000_0000 (992 MB), NOT all 2 GB. DDR below 0x0200_0000 is
+ *    shared with the host through the 64 MB PCIe window (BAR4+0x0C00_0000 = DDR 0x0) and
+ *    holds the status blocks (0x01FE_0000 APU, 0x01FF_0000 OCM). Keeping it out of Linux
+ *    RAM is required, not tidiness: proven on HW in A2, the A72's D-cache does not see
+ *    host writes to cached memory and later writes its stale copy back. Memory outside
+ *    RAM is mapped as non-cacheable device memory (/dev/mem), so host and A72 stay
+ *    consistent there. 0x4000_0000+ stays free for amc.elf when EN_AMC returns.
+ *    U-Boot keeps this node as-is (CONFIG_ARCH_FIXUP_FDT_MEMORY is off in
+ *    xilinx_versal_virt_defconfig).
+ *  - firmware node removed: Linux needs only PSCI (TF-A) for CPUs. Without the node the
+ *    zynqmp firmware/power/clock drivers cannot bind to PMC-managed resources.
+ *  - bootargs for the initramfs shell.
+ */
+/include/ "../a2/v80-coyote-apu.dts"
+
+/ {
+	/delete-node/ memory@0;
+	/delete-node/ firmware;
+
+	memory@2000000 {
+		device_type = "memory";
+		reg = <0 0x02000000 0 0x3e000000>;
+	};
+
+	chosen {
+		bootargs = "console=ttyAMA0,115200 earlycon rdinit=/init";
+	};
+};

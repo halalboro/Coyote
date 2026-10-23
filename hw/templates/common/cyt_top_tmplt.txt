@@ -310,7 +310,7 @@ module cyt_top (
     input  wire[PCIE_GT_BITS-1:0]   pcie_rxn,
     input  wire[PCIE_GT_BITS-1:0]   pcie_rxp,
     output wire[PCIE_GT_BITS-1:0]   pcie_txn,
-    output wire[PCIE_GT_BITS-1:0]   pcie_txp{% if cnfg.fdev == 'v80' and cnfg.en_amc == 1 %},
+    output wire[PCIE_GT_BITS-1:0]   pcie_txp{% if cnfg.fdev == 'v80' and cnfg.en_ddr4 == 1 %},
 
     // V80 onboard DDR4 PHY pins (4 GB, axi_noc_mc_ddr4_0 in cr_ddr4_v80.tcl).
     // Names mirror the BD wrapper / XDC: CH0_DDR4_0_0_* and sys_clk0_0_*.
@@ -472,7 +472,7 @@ module cyt_top (
         .pcie_rxn(pcie_rxn),
         .pcie_rxp(pcie_rxp),
         .pcie_txn(pcie_txn),
-        .pcie_txp(pcie_txp){% if cnfg.fdev == 'v80' and cnfg.en_amc == 1 %},
+        .pcie_txp(pcie_txp){% if cnfg.fdev == 'v80' and cnfg.en_ddr4 == 1 %},
 
         // V80 onboard DDR4 PHY pass-through
         .sys_clk0_0_clk_n(sys_clk0_0_clk_n),

@@ -1,0 +1,19 @@
+# Coyote V80 APU (phase A2) overrides on top of xilinx_versal_virt_defconfig.
+#
+# Drop straight to the prompt: no distro autoboot probing absent boot media.
+CONFIG_BOOTDELAY=-1
+# Never touch the card's OSPI/eMMC: they hold AMD's flash partition table and boot
+# images. Environment lives in RAM only, so `saveenv` cannot write anywhere.
+CONFIG_ENV_IS_NOWHERE=y
+# CONFIG_ENV_IS_IN_FAT is not set
+# CONFIG_ENV_IS_IN_SPI_FLASH is not set
+# Host-side tools that pull in gnutls/openssl development headers we don't have
+# and don't need (the target image is unaffected).
+# CONFIG_TOOLS_MKEFICAPSULE is not set
+# CONFIG_TOOLS_MKFWUMDATA is not set
+# CONFIG_TOOLS_LIBCRYPTO is not set
+# ...and that alone does NOT work: TOOLS_KWBIMAGE (Marvell Kirkwood images, default y)
+# `select`s TOOLS_LIBCRYPTO, and a select overrides this line. With libcrypto forced on,
+# TOOLS_FIT_SIGNATURE (a def_bool depending on it) pulls <openssl/evp.h> into include/image.h
+# for every host tool, and the build dies with 'openssl/evp.h: No such file or directory'.
+# CONFIG_TOOLS_KWBIMAGE is not set

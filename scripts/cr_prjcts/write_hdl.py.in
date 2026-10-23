@@ -50,6 +50,14 @@ with open('base.tcl') as f:
             cfg[str(cvar)] = cfg_val
             i = i + 1
 
+# DDR4 substrate: needed by the AMC (R5 code at 0x4000_0000 + shared memory) and
+# INDEPENDENTLY by the APU (Linux RAM). Mirrors `ddr4_needed` in
+# hw/bd/versal/cr_pci.tcl, which instantiates axi_noc_mc_ddr4_0 for either
+# consumer; this flag drives the matching top-level DDR4 PHY ports. Without it
+# the controller exists in the BD with nowhere to drive, and opt_design fails
+# with [DRC REQP-2067/2070] "IO pin that is not connected to an IO PORT object".
+cfg['en_ddr4'] = 1 if (cfg.get('en_amc', 0) == 1 or cfg.get('en_apu', 0) == 1) else 0
+
 # Args
 arg1 = int(sys.argv[1]) # Design layer 
 arg2 = int(sys.argv[2]) # Current config

@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Coyote V80 APU (Cortex-A72) board device tree -- phase A2 (TF-A + U-Boot); base for A3.
+ *
+ * DELIBERATELY MINIMAL. It describes only what the APU owns. The card's OSPI flash and
+ * eMMC (AMD's flash partition table and boot images), the I2C/SMBus sensors, the R5-side
+ * peripherals and the PL are absent on purpose: with no node, no driver can bind to them,
+ * so neither U-Boot nor Linux can touch hardware that other subsystems own.
+ *
+ * Every value below is verified on this design, not copied from a reference board:
+ *  - GIC-v3 GICD/GICR, arch timer PPIs, PSCI over SMC: linux-xlnx/u-boot-xlnx versal.dtsi.
+ *  - PS UARTs are ARM PL011 (not Cadence). UART0 @0xFF000000 is the console and reaches
+ *    the host on /dev/ttyUSB2 (clara V80, proven by injecting markers over JTAG).
+ *  - UART reference clock 100 MHz: measured, the PLM programs IBRD=54 FBRD=16 for 115200
+ *    (115200 * 16 * 54.25 = 99.994 MHz).
+ *  - DDR4: 2 GB at 0x0 through the APU's FPD_CCI_NOC -> NoC -> DDR4 path (A1; the A72
+ *    was proven to reach DDR on hardware in A0).
+ *  - The firmware node is REQUIRED by U-Boot, not decoration: its bind sets the SMC
+ *    handler used by zynqmp_pm_get_bootmode_reg() at boot. Without it, that is a NULL
+ *    function-pointer call. Those calls go TF-A -> IPI0 -> PMC (IPI0 mastered by A72).
+ */
+/dts-v1/;
+
+/ {
+	compatible = "xlnx,versal";
+	model = "Coyote V80 APU (Cortex-A72)";
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			compatible = "arm,cortex-a72";
+			device_type = "cpu";
+			enable-method = "psci";
+			reg = <0>;
+		};
+
+		cpu1: cpu@1 {
+			compatible = "arm,cortex-a72";
+			device_type = "cpu";
+			enable-method = "psci";
+			reg = <1>;
+		};
+	};
+
+	psci {
+		compatible = "arm,psci-0.2";
+		method = "smc";
+	};
+
+	firmware {
+		versal_firmware: versal-firmware {
+			compatible = "xlnx,versal-firmware";
+			method = "smc";
+			bootph-all;
+			#power-domain-cells = <1>;
+		};
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupt-parent = <&gic>;
+		interrupts = <1 13 4>, <1 14 4>, <1 11 4>, <1 10 4>;
+	};
+
+	uart_clk: clock-uart {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <100000000>;
+		bootph-all;
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0 0x00000000 0 0x80000000>;
+	};
+
+	axi {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		bootph-all;
+
+		gic: interrupt-controller@f9000000 {
+			compatible = "arm,gic-v3";
+			#interrupt-cells = <3>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			reg = <0 0xf9000000 0 0x80000>,   /* GICD */
+			      <0 0xf9080000 0 0x80000>;   /* GICR */
+			interrupt-controller;
+			interrupt-parent = <&gic>;
+			interrupts = <1 9 4>;
+		};
+
+		serial0: serial@ff000000 {
+			compatible = "arm,pl011", "arm,primecell";
+			reg = <0 0xff000000 0 0x1000>;
+			interrupt-parent = <&gic>;
+			interrupts = <0 18 4>;
+			reg-io-width = <4>;
+			clocks = <&uart_clk>, <&uart_clk>;
+			clock-names = "uartclk", "apb_pclk";
+			/* U-Boot pl01x fallback when no clock provider binds. */
+			clock = <100000000>;
+			/* U-Boot: keep the PLM's 115200 programming instead of re-initialising. */
+			skip-init;
+			bootph-all;
+		};
+	};
+
+	aliases {
+		serial0 = &serial0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+};

@@ -36,10 +36,12 @@
 #   python fix_bif.py <bif_path>
 #       Insert boot_device { pcie } into <bif_path> (base BIF prep).
 #
-#   python fix_bif.py --combine <out_bif> <base_pdi> <amc_elf>
+#   python fix_bif.py --combine <out_bif> <base_pdi> <amc_elf> [apu_elf]
 #       Write an AVED-style combine BIF to <out_bif>. Paths are BIF-relative
 #       (relative to bootgen's CWD, i.e. build_dir), matching the convention
 #       used for the base PDI's own partition file references.
+#       With <apu_elf> (EN_APU=1) a second delayed-handoff image is appended,
+#       booting the A72 alongside the R5.
 
 import os
 import sys
@@ -59,6 +61,31 @@ COMBINE_BIF_TEMPLATE = """all:
         {{ core=r5-0, file={amc_elf} }}
     }}
 }}
+"""
+
+
+# Second delayed-handoff image, for the APU. Same subsystem id as the RPU image:
+# bootgen v2025.1 was verified to accept same-id, different-id and
+# single-image-two-core forms, so this is a runtime choice, not a syntax one.
+# Coyote's pmc_data.cdo defines exactly one subsystem (pm_add_subsystem
+# 0x1c000000) with zero requirements; binding the R5 anywhere else is what
+# produced PLM 0x347 then 0x33C/0x801. The APU needs no TCM, so the default
+# subsystem is sufficient and is the only one the CDO knows about.
+# Combine BIF with no R5 image at all (APU-only build).
+BASE_ONLY_BIF_TEMPLATE = """all:
+{{
+    image
+    {{
+        {{ type=bootimage, file={base_pdi} }}
+    }}
+}}
+"""
+
+APU_IMAGE_TEMPLATE = """    image
+    {{
+        id = 0x1c000000, name=apu_subsystem, delay_handoff
+        {{ core=a72-0, file={apu_elf} }}
+    }}
 """
 
 
@@ -85,26 +112,43 @@ def insert_boot_device(path):
         f.writelines(out)
 
 
-def write_combine_bif(out_path, base_pdi, amc_elf):
-    """Write an AVED-style combine BIF (base PDI + amc.elf as RPU subsystem)."""
+def write_combine_bif(out_path, base_pdi, amc_elf, apu_elf=None):
+    """Write an AVED-style combine BIF: base PDI, optionally + an R5-0 image,
+    optionally + an A72-0 image. Pass '-' for amc_elf to omit the R5 image (an
+    APU-only build). The two are independent: which R5 firmware is present (AMC
+    or the co-processor provider, or none) must not decide whether the APU boots.
+    """
+    if amc_elf and amc_elf != '-':
+        text = COMBINE_BIF_TEMPLATE.format(base_pdi=base_pdi, amc_elf=amc_elf)
+    else:
+        text = BASE_ONLY_BIF_TEMPLATE.format(base_pdi=base_pdi)
+    if apu_elf:
+        # Splice the APU image in before the final closing brace.
+        stripped = text.rstrip()
+        if not stripped.endswith('}'):
+            raise RuntimeError('unexpected combine BIF shape; cannot splice APU image')
+        text = stripped[:-1] + APU_IMAGE_TEMPLATE.format(apu_elf=apu_elf) + '}\n'
     with open(out_path, 'w') as f:
-        f.write(COMBINE_BIF_TEMPLATE.format(base_pdi=base_pdi, amc_elf=amc_elf))
+        f.write(text)
     print('fix_bif.py: wrote combine BIF ' + out_path +
-          ' (base=' + base_pdi + ', amc=' + amc_elf + ')')
+          ' (base=' + base_pdi + ', amc=' + amc_elf +
+          (', apu=' + apu_elf if apu_elf else '') + ')')
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 5 and sys.argv[1] == '--combine':
-        _, _, out_bif, base_pdi, amc_elf = sys.argv
-        # Best-effort existence check for the amc.elf (bootgen fails cryptically
-        # on a missing file). base_pdi may not exist yet at check time.
-        if not os.path.isabs(amc_elf):
-            bif_dir = os.path.dirname(os.path.abspath(out_bif))
-            check = os.path.join(os.path.dirname(bif_dir), amc_elf)
-            if not os.path.isfile(check):
-                print('fix_bif.py: WARNING: AMC file not found at ' + check +
-                      ' (bootgen will fail if path is wrong)')
-        write_combine_bif(out_bif, base_pdi, amc_elf)
+    if len(sys.argv) in (5, 6) and sys.argv[1] == '--combine':
+        out_bif, base_pdi, amc_elf = sys.argv[2], sys.argv[3], sys.argv[4]
+        apu_elf = sys.argv[5] if len(sys.argv) == 6 else None
+        # Best-effort existence checks (bootgen fails cryptically on a missing
+        # file). base_pdi may not exist yet at check time.
+        for label, path in (('R5', amc_elf), ('APU', apu_elf)):
+            if path and path != '-' and not os.path.isabs(path):
+                bif_dir = os.path.dirname(os.path.abspath(out_bif))
+                check = os.path.join(os.path.dirname(bif_dir), path)
+                if not os.path.isfile(check):
+                    print('fix_bif.py: WARNING: ' + label + ' file not found at ' +
+                          check + ' (bootgen will fail if path is wrong)')
+        write_combine_bif(out_bif, base_pdi, amc_elf, apu_elf)
         sys.exit(0)
 
     if len(sys.argv) == 2:
@@ -112,5 +156,5 @@ if __name__ == '__main__':
         sys.exit(0)
 
     print('Usage: python fix_bif.py <bif_path>')
-    print('       python fix_bif.py --combine <out_bif> <base_pdi> <amc_elf>')
+    print('       python fix_bif.py --combine <out_bif> <base_pdi> <r5_elf|-> [apu_elf]')
     sys.exit(1)

@@ -208,6 +208,16 @@ set(EN_AMC 0 CACHE STRING "Enable AVED Management Control (AMC) firmware integra
 set(AVED_IPREPO_PATH "/scratch/felix/aved/AVED/hw/amd_v80_gen5x8_25.1/src/iprepo"
     CACHE STRING "Path to AVED iprepo containing cmd_queue, hw_discovery, uuid_rom IPs")
 
+# When EN_APU=1, the V80 shell additionally gives the A72 (APU) a NoC master into
+# DDR4 (versal_cips_0/NOC_FPD_AXI_0 -> axi_noc_0/S04_AXI -> M00_INI), enlarges BAR4
+# to 512 MB with a 256 MB host window onto DDR, and replaces the vFPGA axi_ctrl
+# tie-off with a reachability probe. This is the hardware Linux on the A72 needs;
+# see docs/superpowers/specs/2026-08-18-a72-linux-vfpga-design.md.
+#
+# It builds on top of EN_AMC: the DDR4 controller, the M00_INI route to it and the
+# PMC->DDR load path all come from the AMC integration.
+set(EN_APU 0 CACHE STRING "Enable A72/APU (Linux) integration on V80; requires EN_AMC=1")
+
 ##
 ## RECONFIGURATION
 ##
@@ -1064,6 +1074,13 @@ macro(validation_checks_hw)
         if(EN_AMC AND NOT FDEV_NAME STREQUAL "v80")
             message(FATAL_ERROR "EN_AMC=1 is only supported on V80 (FDEV_NAME=v80).")
         endif()
+        if(EN_APU AND NOT FDEV_NAME STREQUAL "v80")
+            message(FATAL_ERROR "EN_APU=1 is only supported on V80 (FDEV_NAME=v80).")
+        endif()
+        # EN_APU no longer requires EN_AMC: cr_pci.tcl brings the DDR4 controller,
+        # the M00_INI NoC route, the PMC->DDR load path and the host PCIe window
+        # up for EITHER consumer, so the APU can ride alongside the R5
+        # coprocessor provider (FPD_CCI_NOC vs M_AXI_LPD -- no collision).
         if(EN_AMC AND NOT IS_DIRECTORY ${AVED_IPREPO_PATH})
             message(FATAL_ERROR "EN_AMC=1 but AVED_IPREPO_PATH does not exist: ${AVED_IPREPO_PATH}")
         endif()

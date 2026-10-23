@@ -1,0 +1,35 @@
+# Coyote V80 APU phase A3: merged on top of linux-xlnx arch/arm64/configs/xilinx_defconfig.
+#
+# Everything is built in: no modules, because the initramfs carries none.
+# CONFIG_MODULES is not set
+#
+# Size: the Image must fit in the 64 MB host window next to the DTB and initramfs
+# (see boot_a3.py). The board DT describes none of these subsystems, so they could never bind.
+# CONFIG_DRM is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_SOUND is not set
+# CONFIG_USB_SUPPORT is not set
+# CONFIG_WLAN is not set
+# CONFIG_WIRELESS is not set
+# CONFIG_CAN is not set
+# CONFIG_BT is not set
+# CONFIG_FPGA is not set
+#
+# The system keyring would build certs/extract-cert, a host tool that needs OpenSSL headers the
+# versal-shell FHS lacks (the U-Boot TOOLS_LIBCRYPTO trap again). No modules means no signatures to check.
+# CONFIG_SYSTEM_TRUSTED_KEYRING is not set
+#
+# Console and early console on UART0 (PL011 @0xFF000000 = clara /dev/ttyUSB2).
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
+CONFIG_SERIAL_EARLYCON=y
+#
+# Initramfs root with devtmpfs.
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+#
+# /dev/mem: user-space reach into the host-shared DDR below 0x02000000 (not RAM to Linux,
+# so it is mapped as non-cacheable device memory) and, once routed, the vFPGA.
+CONFIG_DEVMEM=y
+# CONFIG_STRICT_DEVMEM is not set

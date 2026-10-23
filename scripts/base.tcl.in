@@ -114,6 +114,7 @@ set cfg(n_aurora_axi)           ${N_AURORA_AXI}
 set cfg(en_qlink_gty)           ${EN_QLINK_GTY}
 set cfg(en_qlink_loopback)      ${EN_QLINK_LOOPBACK}
 set cfg(en_amc)                 ${EN_AMC}
+set cfg(en_apu)                 ${EN_APU}
 set cfg(aved_iprepo)            "${AVED_IPREPO_PATH}"
 set cfg(pmtu)                   ${PMTU_BYTES}
 set cfg(cores)                  ${COMP_CORES}

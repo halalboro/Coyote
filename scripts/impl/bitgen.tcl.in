@@ -71,6 +71,27 @@ if {$cfg(en_pr) eq 0} {
                     >@ stdout 2>@ stderr
             }
 
+            # APU firmware (V80 + EN_APU=1): bare-metal A72-0 image, staged next
+            # to amc.elf for the combine step below. Unlike the AMC it needs no
+            # XSA/BSP -- it is freestanding and links against nothing.
+            if {$cfg(en_apu) eq 1} {
+                file mkdir "$bit_dir/static_files"
+                puts "[color $clr_flow "** Building APU firmware (apu.elf) ..."]"
+                exec bash "$root_dir/fw/apu_v80/build.sh" >@ stdout 2>@ stderr
+                file copy -force "$root_dir/fw/apu_v80/build/apu_first_light.elf" \
+                    "$bit_dir/static_files/apu.elf"
+            }
+
+            # R5 co-processor provider firmware (V80 + EN_V80_R5_PROVIDER=1):
+            # freestanding bare-metal R5-0 image, staged for the combine step.
+            # No XSA/BSP needed (MMIO-only). Mutually exclusive with EN_AMC.
+            if {$cfg(en_v80_r5_provider) eq 1} {
+                file mkdir "$bit_dir/static_files"
+                puts "[color $clr_flow "** Building R5 provider firmware (r5_provider.elf) ..."]"
+                exec bash "$root_dir/fw/r5_provider_v80/build_r5_provider.sh" \
+                    "$bit_dir/static_files/r5_provider.elf" >@ stdout 2>@ stderr
+            }
+
             # On Versal devices, partial reconfiguration can be done through PCIe/QDMA
             # However, to do so, boot_device must be set to PCIe in the BIF file
             # As of 2025.1, it's not possible to configure the boot_device to PCIe directly through Vivado TCL commands
@@ -80,19 +101,33 @@ if {$cfg(en_pr) eq 0} {
             # Prepare the base BIF (adds boot_device { pcie } for PCIe boot).
             exec python fix_bif.py "$bit_dir/cyt_top.bif"
 
+            # PDI assembly. Two orthogonal questions:
+            #   which R5-0 image (AMC firmware, the co-processor provider, or none)
+            #   and whether an A72-0 image is present (EN_APU).
+            # They must not be nested: the APU boots or not independently of which
+            # R5 firmware the example happens to use.
+            #
+            # Both ride the AVED-style two-step combine (base PDI, then a delayed-
+            # handoff subsystem image). Injecting inline instead fails: PLM 0x347
+            # (no subsystem binding) or 0x33C/0x801 (bound but handed off too
+            # early). See fix_bif.py and AVED fpt/pdi_combine.bif.
+            set _r5_elf ""
             if {$cfg(en_amc) eq 1} {
-                # AVED-style two-step PDI assembly for AMC on R5-0:
-                #   1) Generate the base PDI (shell only, no AMC) from cyt_top.bif.
-                #   2) Combine it with amc.elf as a delayed-handoff RPU-subsystem
-                #      image (id 0x1c000000), so the R5 is handed off only after
-                #      the base platform (RPU power domain / subsystem tables) has
-                #      fully booted and its TCM banks can be granted.
-                # Injecting amc.elf inline instead fails: PLM 0x347 (no subsystem
-                # binding) or 0x33C/0x801 (bound but handed off too early). See
-                # fix_bif.py and AVED fpt/pdi_combine.bif.
+                set _r5_elf "bitstreams/static_files/amc.elf"
+            } elseif {$cfg(en_v80_r5_provider) eq 1} {
+                set _r5_elf "bitstreams/static_files/r5_provider.elf"
+            }
+            set _apu_elf ""
+            if {$cfg(en_apu) eq 1} {
+                set _apu_elf "bitstreams/static_files/apu.elf"
+            }
+
+            if {$_r5_elf ne "" || $_apu_elf ne ""} {
                 exec bootgen -arch versal -image "$bit_dir/cyt_top.bif" -w -o "$bit_dir/cyt_top_base.pdi"
-                exec python fix_bif.py --combine "$bit_dir/cyt_top_combine.bif" \
-                    "bitstreams/cyt_top_base.pdi" "bitstreams/static_files/amc.elf"
+                set _combine_args [list "$bit_dir/cyt_top_combine.bif" "bitstreams/cyt_top_base.pdi"]
+                lappend _combine_args [expr {$_r5_elf ne "" ? $_r5_elf : "-"}]
+                if {$_apu_elf ne ""} { lappend _combine_args $_apu_elf }
+                exec python fix_bif.py --combine {*}$_combine_args
                 exec bootgen -arch versal -image "$bit_dir/cyt_top_combine.bif" -w -o "$bit_dir/cyt_top.pdi"
             } else {
                 exec bootgen -arch versal -image "$bit_dir/cyt_top.bif" -w -o "$bit_dir/cyt_top.pdi"
