@@ -250,6 +250,13 @@ module design_user_wrapper_{{ c_reg }} (
     (* io_buffer_type = "none" *) input  logic                                net_raw_tx_tready,
     (* io_buffer_type = "none" *) output logic                                net_raw_tx_tvalid,
     (* io_buffer_type = "none" *) input  logic[7:0]                           mac_status,
+    (* io_buffer_type = "none" *) output logic                                mac_reg_req,
+    (* io_buffer_type = "none" *) output logic                                mac_reg_wr,
+    (* io_buffer_type = "none" *) output logic[31:0]                          mac_reg_addr,
+    (* io_buffer_type = "none" *) output logic[31:0]                          mac_reg_wdata,
+    (* io_buffer_type = "none" *) input  logic                                mac_reg_rsp,
+    (* io_buffer_type = "none" *) input  logic[31:0]                          mac_reg_rdata,
+    (* io_buffer_type = "none" *) input  logic[1:0]                           mac_reg_resp,
 {% endif %}
 
 {% if (cnfg.en_aurora_1 or cnfg.en_qlink_gty) and c_reg == 0 %}
@@ -1438,6 +1445,13 @@ module design_user_wrapper_{{ c_reg }} (
         .axis_net_raw_rx(axis_net_raw_rx),
         .axis_net_raw_tx(axis_net_raw_tx),
         .mac_status(mac_status),
+        .mac_reg_req(mac_reg_req),
+        .mac_reg_wr(mac_reg_wr),
+        .mac_reg_addr(mac_reg_addr),
+        .mac_reg_wdata(mac_reg_wdata),
+        .mac_reg_rsp(mac_reg_rsp),
+        .mac_reg_rdata(mac_reg_rdata),
+        .mac_reg_resp(mac_reg_resp),
     {% endif %}
     {% if (cnfg.en_aurora_1 or cnfg.en_qlink_gty) and c_reg == 0 %}
         .axis_aurora_rx(axis_aurora_rx),

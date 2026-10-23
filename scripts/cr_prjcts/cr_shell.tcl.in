@@ -107,8 +107,32 @@ if {$cfg(en_card) eq 1} {
     add_files "$hw_dir/hdl/cdma/cdma_u"
 }
 if {$cfg(en_net) eq 1} {
-    add_files "$hw_dir/hdl/network/cmac"
+    # MAC layer: CMAC (UltraScale+) or DCMAC (Versal). Pick based on arch —
+    # V80 has no UltraScale+ CMAC IP, only DCMAC; U280/U250 use the older CMAC.
+    # DCMAC HDL is the reusable package from fpgasystems/Versal-DCMAC.
+    if {$cfg(fpga_arch) eq "versal"} {
+        # hdl/network/dcmac is the vendored fpgasystems/Versal-DCMAC package;
+        # hdl/network/dcmac_cyt holds the Coyote-authored glue, kept in a
+        # separate directory so the vendored one stays a straight `cp` target
+        # on future upstream pulls.
+        add_files "$hw_dir/hdl/network/dcmac"
+        add_files "$hw_dir/hdl/network/dcmac_cyt"
+    } else {
+        add_files "$hw_dir/hdl/network/cmac"
+    }
     add_files "$hw_dir/hdl/network/stack"
+    # network_stack.sv and network_packet_sniffer.sv instantiate HLS cores from
+    # the fpga-network-stack submodule plus axis_interconnect and vio, none of
+    # which exist for a Versal part. Nothing instantiates either module on a raw
+    # Ethernet build, but they are still parsed, so take them out of
+    # compilation rather than leaving unresolvable references in the fileset.
+    # network_module.sv needs no such treatment: its CMAC-only IP references sit
+    # inside the `else` arm of its FPGA_ARCH_VERSAL branch and the preprocessor
+    # removes them.
+    if {$cfg(fpga_arch) eq "versal"} {
+        set_property is_enabled false [get_files "$hw_dir/hdl/network/stack/network_stack.sv"]
+        set_property is_enabled false [get_files "$hw_dir/hdl/network/stack/network_packet_sniffer.sv"]
+    }
     if {$cfg(en_rdma) eq 1} {
         add_files "$hw_dir/hdl/network/rdma"
     }
@@ -176,6 +200,68 @@ if {$cfg(fpga_arch) eq "versal"} {
         set cmd "set_property SYNTH_CHECKPOINT_MODE \"Hierarchical\" \[ get_files dyn_crossbar_$i.bd \]"
         eval $cmd
     }
+}
+
+# Versal MAC layer: the 200G DCMAC ships as a block design, not a plain IP.
+# It lives in the shell (not the static layer) because a V80 network build
+# forces EN_SHELL_PBLOCK=0, so inst_shell is never a reconfigurable partition
+# and the GT quads are static silicon either way.
+#
+# nclk_f is passed explicitly rather than left empty: bd_dcmac's empty-string
+# fallback reaches for a global cfg(nclk_f) via upvar, which works here but
+# only by luck of scope.
+#
+# EN_NET_0 / EN_NET_1 select which DCMAC site, and therefore which pair of QSFP
+# cages is reachable:
+#   EN_NET_0 -> index 0 = DCMAC_X1Y1 -> GTM_QUAD_X1Y7, bank 209 = qsfp0
+#   EN_NET_1 -> index 1 = DCMAC_X0Y2 -> GTM_QUAD_X0Y9, bank 111 = qsfp3
+# dcmac_axis_wrapper.sv picks the matching block design module by `ifdef EN_NET_1.
+if {$cfg(fpga_arch) eq "versal" && $cfg(en_net) eq 1} {
+    set dcmac_index [expr {$cfg(en_net_1) eq 1 ? 1 : 0}]
+    # cr_dcmac.tcl sources board_config.tcl itself, resolved relative to its own
+    # location via `info script` — hence that file keeps its upstream name and
+    # must sit next to it. Don't source it here as well.
+    source "$hw_dir/bd/$cfg(fpga_arch)/cr_dcmac.tcl" -notrace
+
+    # bd_dcmac picks its boundary style by probing current_bd_design: no design
+    # open means standalone (it creates its own BD with external ports, which is
+    # what we instantiate from dcmac_axis_wrapper.sv); a design open means inline
+    # (pins on a caller-supplied hierarchical cell).
+    #
+    # The BD work above leaves a design current — cr_bd_design_ctrl and
+    # cr_bd_dyn_xbar both close their own designs, but the
+    # set_property SYNTH_CHECKPOINT_MODE calls on those .bd files make Vivado
+    # open them again. Without this, bd_dcmac silently takes the inline path and
+    # dies on its first boundary call with
+    #   ERROR: [BD 5-253] Please change the current instance to a hierarchical cell
+    # Assert the precondition rather than assuming it.
+    for {set i 0} {$i < 8 && [current_bd_design -quiet] ne ""} {incr i} {
+        catch { close_bd_design [current_bd_design -quiet] }
+    }
+    if {[current_bd_design -quiet] ne ""} {
+        puts "[color $clr_error "ERROR: block design [current_bd_design -quiet] is still current; bd_dcmac would build in inline mode"]"
+        exit 1
+    }
+
+    # dcmac_axil=1 and dcmac_mon=1: the DCMAC's PG369 register space and a
+    # segment-level monitor are reachable from the host through
+    # dcmac_axis_wrapper's register port (see dcmac_debug.sv). That is the only
+    # way to see the hard block's own counters and PHY/MAC status.
+    if {[bd_dcmac "" $dcmac_index 0 1 $cfg(fdev) $cfg(nclk_f) 1] != 0} {
+        puts "[color $clr_error "ERROR: bd_dcmac failed for $cfg(fdev) index $dcmac_index"]"
+        exit 1
+    }
+    # NOTE: build the name with `format`. Do NOT use Tcl brace substitution
+    # (a dollar sign followed by the variable name in curly braces) anywhere in
+    # this file: it goes through CMake configure_file() WITHOUT @ONLY, so CMake
+    # reads that as one of its own variable references, finds nothing, and
+    # substitutes the empty string. The symptom is a silently mangled name -
+    # "dcmac__versal_axis_wrapper.bd" - and a "No files matched" warning at
+    # project creation. That is also why the crossbar loop above uses a bare $i.
+    set dcmac_bd [format "dcmac_%d_versal_axis_wrapper.bd" $dcmac_index]
+    set_property SYNTH_CHECKPOINT_MODE "Hierarchical" [get_files $dcmac_bd]
+    # Leave no design current, for the same reason as above.
+    catch { close_bd_design [current_bd_design -quiet] }
 }
 
 if {$cfg(en_dcard) eq 1} {

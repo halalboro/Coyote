@@ -38,8 +38,30 @@ import lynxTypes::*;
 // ================-----------------------------------------------------------------
 
 module cyt_top (
+{% if cnfg.fdev == 'v80' and cnfg.en_net %}
+    // V80 QSFP56 cage, driven by the 200G DCMAC. EN_NET_0 uses GT 0
+    // (DCMAC_X1Y1, bank 209 = qsfp0); EN_NET_1 uses GT 1 (DCMAC_X0Y2,
+    // bank 111 = qsfp3). Exactly one is enabled. No qsfp*_ sideband pins:
+    // on the V80 the cage's control and I2C belong to the AVED satellite
+    // controller, not the PL.
+{% if cnfg.en_net_0 %}
+    (* io_buffer_type = "none" *) input  wire[3:0]            gt0_rxp_in,
+    (* io_buffer_type = "none" *) input  wire[3:0]            gt0_rxn_in,
+    (* io_buffer_type = "none" *) output  wire[3:0]           gt0_txp_out,
+    (* io_buffer_type = "none" *) output  wire[3:0]           gt0_txn_out,
+    (* io_buffer_type = "none" *) input  wire                 gt0_refclk_p,
+    (* io_buffer_type = "none" *) input  wire                 gt0_refclk_n,
+{% endif %}
+{% if cnfg.en_net_1 %}
+    (* io_buffer_type = "none" *) input  wire[3:0]            gt1_rxp_in,
+    (* io_buffer_type = "none" *) input  wire[3:0]            gt1_rxn_in,
+    (* io_buffer_type = "none" *) output  wire[3:0]           gt1_txp_out,
+    (* io_buffer_type = "none" *) output  wire[3:0]           gt1_txn_out,
+    (* io_buffer_type = "none" *) input  wire                 gt1_refclk_p,
+    (* io_buffer_type = "none" *) input  wire                 gt1_refclk_n,
+{% endif %}
+{% endif %}
 {% if cnfg.fdev != 'v80' %}
-    // TODO (Versal): Add networking support
     // GT 0
     (* io_buffer_type = "none" *) input  wire[3:0]            gt0_rxp_in,
     (* io_buffer_type = "none" *) input  wire[3:0]            gt0_rxn_in,
@@ -585,7 +607,7 @@ module cyt_top (
         .m_dma_wr_req_{{ i }}_rsp     (dma_wr_req_sh2st[{{ i }}].rsp),
 
     {% endfor %}
-    {% if cnfg.fdev != 'v80' %}  
+    {% if cnfg.fdev != 'v80' %}
         // I/O
         .gt0_rxp_in(gt0_rxp_in),
         .gt0_rxn_in(gt0_rxn_in),
@@ -593,7 +615,25 @@ module cyt_top (
         .gt0_txn_out(gt0_txn_out),
         .gt0_refclk_p(gt0_refclk_p),
         .gt0_refclk_n(gt0_refclk_n),
-    {% if cnfg.fdev != 'u50d' %}  
+    {% if cnfg.fdev != 'u50d' %}
+        .gt1_rxp_in(gt1_rxp_in),
+        .gt1_rxn_in(gt1_rxn_in),
+        .gt1_txp_out(gt1_txp_out),
+        .gt1_txn_out(gt1_txn_out),
+        .gt1_refclk_p(gt1_refclk_p),
+        .gt1_refclk_n(gt1_refclk_n),
+    {% endif %}
+    {% elif cnfg.en_net %}
+        // V80 DCMAC: whichever GT the selected DCMAC index drives
+    {% if cnfg.en_net_0 %}
+        .gt0_rxp_in(gt0_rxp_in),
+        .gt0_rxn_in(gt0_rxn_in),
+        .gt0_txp_out(gt0_txp_out),
+        .gt0_txn_out(gt0_txn_out),
+        .gt0_refclk_p(gt0_refclk_p),
+        .gt0_refclk_n(gt0_refclk_n),
+    {% endif %}
+    {% if cnfg.en_net_1 %}
         .gt1_rxp_in(gt1_rxp_in),
         .gt1_rxn_in(gt1_rxn_in),
         .gt1_txp_out(gt1_txp_out),

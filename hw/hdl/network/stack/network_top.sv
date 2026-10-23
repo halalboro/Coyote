@@ -106,6 +106,25 @@ module network_top #(
     metaIntf.s                  s_filter_config,
 `endif
 
+`ifdef EN_NET_RAW
+    // Raw Ethernet with the stack bypassed: whole frames to and from a single
+    // vFPGA, which owns destination MAC, source MAC, EtherType and payload.
+    AXI4S.m                     m_axis_net_rx_raw,
+    AXI4S.s                     s_axis_net_tx_raw,
+    output wire [7:0]           mac_status,
+
+    // Debug register port into the MAC, aclk domain. Single outstanding
+    // request; see reg_port_ccross.sv for the contract and
+    // network/dcmac_cyt/dcmac_debug.sv for what answers on Versal.
+    input  wire                 mac_reg_req,
+    input  wire                 mac_reg_wr,
+    input  wire [31:0]          mac_reg_addr,
+    input  wire [31:0]          mac_reg_wdata,
+    output wire                 mac_reg_rsp,
+    output wire [31:0]          mac_reg_rdata,
+    output wire [1:0]           mac_reg_resp,
+`endif
+
     // Clocks
     input  wire                 aclk,
     input  wire                 aresetn,
@@ -140,13 +159,39 @@ end
 AXI4S #(.AXI4S_DATA_BITS(AXI_NET_BITS)) axis_r_clk_rx_data (.aclk(r_clk), .aresetn(r_resetn));
 AXI4S #(.AXI4S_DATA_BITS(AXI_NET_BITS)) axis_r_clk_tx_data (.aclk(r_clk), .aresetn(r_resetn));
 
+// MAC bring-up status, r_clk domain. Always driven; only crossed into aclk and
+// exposed at the boundary in raw mode, where there is no stack to report
+// through (see the CDC in the raw bypass below).
+wire [7:0] mac_status_int;
+
+// Debug register port, r_clk side. Only raw mode has a requester; otherwise it
+// is held idle.
+wire        mac_reg_req_r;
+wire        mac_reg_wr_r;
+wire [31:0] mac_reg_addr_r;
+wire [31:0] mac_reg_wdata_r;
+wire        mac_reg_rsp_r;
+wire [31:0] mac_reg_rdata_r;
+wire [1:0]  mac_reg_resp_r;
+
 network_module #(
     .N_STGS(N_REG_NET_S2)
 ) inst_network_module (
     .init_clk (init_clk),
     .sys_reset (sys_reset),
+    .nclk(nclk),
+    .nresetn(nresetn),
     .rclk(r_clk),
     .rresetn(r_resetn),
+    .mac_status(mac_status_int),
+
+    .mac_reg_req(mac_reg_req_r),
+    .mac_reg_wr(mac_reg_wr_r),
+    .mac_reg_addr(mac_reg_addr_r),
+    .mac_reg_wdata(mac_reg_wdata_r),
+    .mac_reg_rsp(mac_reg_rsp_r),
+    .mac_reg_rdata(mac_reg_rdata_r),
+    .mac_reg_resp(mac_reg_resp_r),
 
     .gt_refclk_p(gt_refclk_p),
     .gt_refclk_n(gt_refclk_n),
@@ -282,6 +327,8 @@ AXI4S #(.AXI4S_DATA_BITS(AXI_DDR_BITS)) axis_tcp_mem_wr_aclk (.*);
 logic [N_REG_NET_S0:0][63:0] ddr_offset_addr_tcp;
 AXI4 axi_tcp_ddr_slice ();
 
+`ifndef EN_NET_RAW
+
 /**
  * Network stack
  */
@@ -399,6 +446,118 @@ network_slice_array #(
     .aclk(aclk),
     .aresetn(aresetn)
 );
+
+// No requester for the MAC debug register port without raw mode.
+assign mac_reg_req_r   = 1'b0;
+assign mac_reg_wr_r    = 1'b0;
+assign mac_reg_addr_r  = 32'h0;
+assign mac_reg_wdata_r = 32'h0;
+
+`else
+
+/**
+ * Raw Ethernet bypass
+ *
+ * Skips network_stack (IP handler, ICMP server, MAC/IP encode, ARP server)
+ * entirely and hands the MAC's 512-bit stream to a vFPGA. Those four are HLS
+ * IPs from the fpga-network-stack submodule and are not built for Versal, so
+ * on a V80 they are not merely unnecessary but unavailable.
+ *
+ * The stack normally absorbs the n_clk -> aclk crossing on the way to user
+ * logic (that is what CROSS_LATE does for the config channels), so with the
+ * stack removed the crossing has to happen here: the vFPGA runs on aclk, the
+ * MAC on n_clk, and on Versal those are separate clk_wizard outputs even when
+ * ACLK_F and NCLK_F are numerically equal. Reuses the same async AXIS FIFO
+ * that network_ccross_early instantiates.
+ */
+axis_data_fifo_net_ccross_early_512 inst_net_raw_cc_rx (
+    .s_axis_aclk(n_clk),
+    .s_axis_aresetn(n_resetn),
+    .s_axis_tvalid(axis_n_clk_rx_data.tvalid),
+    .s_axis_tready(axis_n_clk_rx_data.tready),
+    .s_axis_tdata(axis_n_clk_rx_data.tdata),
+    .s_axis_tkeep(axis_n_clk_rx_data.tkeep),
+    .s_axis_tlast(axis_n_clk_rx_data.tlast),
+    .m_axis_aclk(aclk),
+    .m_axis_tvalid(m_axis_net_rx_raw.tvalid),
+    .m_axis_tready(m_axis_net_rx_raw.tready),
+    .m_axis_tdata(m_axis_net_rx_raw.tdata),
+    .m_axis_tkeep(m_axis_net_rx_raw.tkeep),
+    .m_axis_tlast(m_axis_net_rx_raw.tlast)
+);
+
+axis_data_fifo_net_ccross_early_512 inst_net_raw_cc_tx (
+    .s_axis_aclk(aclk),
+    .s_axis_aresetn(aresetn),
+    .s_axis_tvalid(s_axis_net_tx_raw.tvalid),
+    .s_axis_tready(s_axis_net_tx_raw.tready),
+    .s_axis_tdata(s_axis_net_tx_raw.tdata),
+    .s_axis_tkeep(s_axis_net_tx_raw.tkeep),
+    .s_axis_tlast(s_axis_net_tx_raw.tlast),
+    .m_axis_aclk(n_clk),
+    .m_axis_tvalid(axis_n_clk_tx_data.tvalid),
+    .m_axis_tready(axis_n_clk_tx_data.tready),
+    .m_axis_tdata(axis_n_clk_tx_data.tdata),
+    .m_axis_tkeep(axis_n_clk_tx_data.tkeep),
+    .m_axis_tlast(axis_n_clk_tx_data.tlast)
+);
+
+// mac_status is already synchronised into r_clk (== n_clk here) by
+// dcmac_axis_wrapper, so this is the second and last hop, into aclk.
+xpm_cdc_array_single #(
+    .DEST_SYNC_FF   (4),
+    .INIT_SYNC_FF   (0),
+    .SIM_ASSERT_CHK (1),
+    .SRC_INPUT_REG  (0),
+    .WIDTH          (8)
+) inst_cdc_mac_status (
+    .src_clk  (1'b0),
+    .src_in   (mac_status_int),
+    .dest_clk (aclk),
+    .dest_out (mac_status)
+);
+
+// Debug register port, aclk -> r_clk. On Versal the far side is reset by the
+// raw nresetn rather than r_resetn, which is gated on the DCMAC reset FSM:
+// the DCMAC's own registers are most useful exactly when that FSM is stuck.
+`ifdef FPGA_ARCH_VERSAL
+wire mac_reg_m_resetn = nresetn;
+`else
+wire mac_reg_m_resetn = r_resetn;
+`endif
+
+reg_port_ccross #(
+    .ADDR_BITS(32),
+    .DATA_BITS(32)
+) inst_mac_reg_ccross (
+    .s_clk    (aclk),
+    .s_resetn (aresetn),
+    .s_req    (mac_reg_req),
+    .s_wr     (mac_reg_wr),
+    .s_addr   (mac_reg_addr),
+    .s_wdata  (mac_reg_wdata),
+    .s_rsp    (mac_reg_rsp),
+    .s_rdata  (mac_reg_rdata),
+    .s_resp   (mac_reg_resp),
+
+    .m_clk    (r_clk),
+    .m_resetn (mac_reg_m_resetn),
+    .m_req    (mac_reg_req_r),
+    .m_wr     (mac_reg_wr_r),
+    .m_addr   (mac_reg_addr_r),
+    .m_wdata  (mac_reg_wdata_r),
+    .m_rsp    (mac_reg_rsp_r),
+    .m_rdata  (mac_reg_rdata_r),
+    .m_resp   (mac_reg_resp_r)
+);
+
+// The stack's configuration channels have no meaning without a stack, but the
+// shell still drives them, so sink them rather than leaving them hanging.
+always_comb s_arp_lookup_request.tie_off_s();
+always_comb s_set_ip_addr.tie_off_s();
+always_comb s_set_mac_addr.tie_off_s();
+
+`endif
 
 /**
  * RDMA

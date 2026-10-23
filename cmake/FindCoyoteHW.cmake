@@ -152,6 +152,18 @@ set(N_TCP_AXI 1 CACHE STRING "Number of TCP/IP streams")
 set(EN_SNIFFER 0 CACHE STRING "Enable packet sniffer.")
 set(SNIFFER_VFPGA_ID 0 CACHE STRING "ID of vFPGA to receive packet sniffer data stream.")
 
+# Raw Ethernet: hand whole frames straight to one vFPGA, bypassing the network
+# stack (IP handler, ICMP server, MAC/IP encode, ARP server). The vFPGA owns
+# the entire frame - destination MAC, source MAC, EtherType and payload - and
+# gets a bidirectional 512-bit AXI4-Stream pair plus the MAC's bring-up status.
+#
+# This is the only supported networking mode on Versal/V80 today: the stack's
+# four HLS cores come from the fpga-network-stack submodule and have not been
+# built for a Versal part. Mutually exclusive with EN_RDMA, EN_TCP, EN_SNIFFER
+# and EN_STATS, all of which need the stack that this mode removes.
+set(EN_NET_RAW 0 CACHE STRING "Raw Ethernet to a single vFPGA, network stack bypassed")
+set(NET_RAW_VFPGA_ID 0 CACHE STRING "ID of vFPGA to receive the raw Ethernet stream")
+
 # Use QSFP port 0
 set(EN_NET_0 1 CACHE STRING "QSFP port 0")
 
@@ -919,22 +931,90 @@ macro(validation_checks_hw)
         endif()
 
         # Top net enabled
-        if(EN_RDMA OR EN_TCP OR EN_SNIFFER)
+        if(EN_RDMA OR EN_TCP OR EN_SNIFFER OR EN_NET_RAW)
             set(EN_NET 1)
         else()
             set(EN_NET 0)
         endif()
 
+        # Raw Ethernet removes network_stack, so anything that consumes or
+        # produces through the stack is incompatible with it.
+        if(EN_NET_RAW AND (EN_RDMA OR EN_TCP OR EN_SNIFFER))
+            message(FATAL_ERROR "EN_NET_RAW bypasses the network stack, so it cannot be combined with "
+                                "EN_RDMA, EN_TCP or EN_SNIFFER; those all sit on top of the stack.")
+        endif()
+        if(EN_NET_RAW AND EN_STATS)
+            message(FATAL_ERROR "EN_NET_RAW bypasses the network stack, which is what produces net_stats; "
+                                "set EN_STATS=0. MAC bring-up status is exposed to the vFPGA instead.")
+        endif()
+        if(EN_NET_RAW AND NET_RAW_VFPGA_ID GREATER_EQUAL N_REGIONS)
+            message(FATAL_ERROR "NET_RAW_VFPGA_ID (${NET_RAW_VFPGA_ID}) must be a valid vFPGA index, i.e. < N_REGIONS (${N_REGIONS}).")
+        endif()
+
         # Versal networking uses DCMAC (200 Gb/s) — ported from
         # fpgasystems/Versal-DCMAC into hw/hdl/network/dcmac/ and
-        # hw/bd/versal/cr_dcmac.tcl. Only V80 has a board_config_dcmac entry
+        # hw/bd/versal/cr_dcmac.tcl. Only V80 has a board_config.tcl entry
         # so far; other Versal boards (VHK158, VPK120) need an entry added
         # before EN_NET works on them.
         if (EN_NET AND FPGA_ARCH STREQUAL "versal" AND NOT FDEV_NAME STREQUAL "v80")
             message(FATAL_ERROR "EN_NET on Versal currently requires FDEV_NAME=v80 "
-                                "(no DCMAC site mapping for ${FDEV_NAME} in board_config_dcmac.tcl).")
+                                "(no DCMAC site mapping for ${FDEV_NAME} in board_config.tcl).")
         endif()
-        
+
+        # The network stack's HLS cores have not been built for a Versal part,
+        # so Versal networking is raw-Ethernet only for now.
+        if (EN_NET AND FPGA_ARCH STREQUAL "versal" AND NOT EN_NET_RAW)
+            message(FATAL_ERROR "Networking on Versal currently requires EN_NET_RAW=1: the network stack's "
+                                "HLS cores (ip_handler, icmp_server, mac_ip_encode, arp_server_subnet) come "
+                                "from the fpga-network-stack submodule and are not built for Versal parts.")
+        endif()
+
+        # The DCMAC and its GT quad cannot live inside a reconfigurable
+        # partition. Both configurations that Coyote allows on Versal keep
+        # inst_shell static (a flat BUILD_STATIC link, or EN_PR=1 with the
+        # vFPGA as the only RP), so the requirement is just EN_SHELL_PBLOCK=0.
+        if (EN_NET AND FPGA_ARCH STREQUAL "versal" AND EN_SHELL_PBLOCK)
+            message(FATAL_ERROR "EN_NET on Versal requires EN_SHELL_PBLOCK=0. With the shell floorplanned "
+                                "as a reconfigurable partition, the DCMAC hard block and its GT quad would "
+                                "land inside an RP. Use BUILD_STATIC=1 (flat link) or EN_PR=1.")
+        endif()
+
+        # On Versal, EN_NET_0/EN_NET_1 select the DCMAC site rather than a CMAC
+        # instance, and with it the reachable QSFP cage:
+        #   EN_NET_0 -> DCMAC_X1Y1 -> GTM_QUAD_X1Y7, bank 209 -> qsfp0
+        #   EN_NET_1 -> DCMAC_X0Y2 -> GTM_QUAD_X0Y9, bank 111 -> qsfp3
+        # The pair is already mutually exclusive (checked further down), which
+        # is what dcmac_axis_wrapper.sv's `ifdef EN_NET_1 relies on to pick the
+        # block design module name.
+        if (EN_NET AND FPGA_ARCH STREQUAL "versal")
+            if (EN_NET_1)
+                message(STATUS "Versal networking: DCMAC index 1 (DCMAC_X0Y2), bank 111 -> QSFP cage 3.")
+            else()
+                message(STATUS "Versal networking: DCMAC index 0 (DCMAC_X1Y1), bank 209 -> QSFP cage 0.")
+            endif()
+        endif()
+
+        # nclk carries the raw Ethernet stream at 512 bits, so sustaining the
+        # DCMAC's 200 Gb/s needs at least 390.625 MHz. Below that, a full-rate
+        # RX burst overruns the block design's RX CDC FIFO and frames are lost;
+        # there is no drop logic on this path. Coyote's 250 MHz default is
+        # therefore raised to 400 MHz (204.8 Gb/s, matching the ACLK_F already
+        # recommended for V80 Gen5) unless the user asked for something else.
+        if(EN_NET AND FPGA_ARCH STREQUAL "versal")
+            if(NCLK_F EQUAL 250)
+                set(NCLK_F 400)
+                # NCLK_P was derived from the old value further up, so redo it.
+                period_calc("1000.0 / ${NCLK_F}" NCLK_P)
+                message(STATUS "Versal networking: raising NCLK_F from the 250 MHz default to 400 MHz "
+                               "so the user side can absorb the DCMAC's 200 Gb/s line rate.")
+            elseif(NCLK_F LESS 391)
+                message(WARNING "NCLK_F=${NCLK_F} MHz gives ${NCLK_F}*512 b/s < 200 Gb/s on the raw Ethernet "
+                                "path. Sustained full-rate receive will overrun the DCMAC RX FIFO and drop "
+                                "frames. Use NCLK_F>=391 for line rate.")
+            endif()
+        endif()
+
+
         # Mult user channels
         set(MULT_RDMA_AXI 0)
         if(N_RDMA_AXI GREATER 1)
@@ -1469,7 +1549,15 @@ endmacro()
 
 # Generate build targets
 macro(gen_targets)
-    if(EN_NET)
+    # hw/services/network is the fpga-network-stack submodule. Raw Ethernet
+    # bypasses network_stack entirely and instantiates none of its HLS cores, so
+    # skip it there - otherwise an uninitialised submodule fails configuration
+    # for a build that never needed it.
+    if(EN_NET AND NOT EN_NET_RAW)
+        if(NOT EXISTS ${CYT_DIR}/hw/services/network/CMakeLists.txt)
+            message(FATAL_ERROR "hw/services/network is empty; the fpga-network-stack submodule is not "
+                                "initialised. Run: git submodule update --init --recursive")
+        endif()
         add_subdirectory(${CYT_DIR}/hw/services/network ${CMAKE_BINARY_DIR}/network)
         set(NET_SYNTH_CMD COMMAND make services)
     endif()

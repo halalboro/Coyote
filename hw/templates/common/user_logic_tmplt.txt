@@ -105,6 +105,19 @@ module design_user_logic_c{{ c_cnfg }}_{{ c_reg }} (
     AXI4S.s                     axis_net_raw_rx,
     AXI4S.m                     axis_net_raw_tx,
     input  wire[7:0]            mac_status,
+    // Debug register port into the MAC (aclk). Pulse mac_reg_req with
+    // {mac_reg_wr, mac_reg_addr, mac_reg_wdata} valid, then wait for the
+    // mac_reg_rsp pulse before issuing another. On Versal, addresses below
+    // 0x100000 are the DCMAC's PG369 registers and 0x100000 up is the segment
+    // monitor in network/dcmac_cyt/dcmac_debug.sv. Tie mac_reg_req to 0 if
+    // unused.
+    output logic                mac_reg_req,
+    output logic                mac_reg_wr,
+    output logic[31:0]          mac_reg_addr,
+    output logic[31:0]          mac_reg_wdata,
+    input  wire                 mac_reg_rsp,
+    input  wire[31:0]           mac_reg_rdata,
+    input  wire[1:0]            mac_reg_resp,
 {% endif %}
 
 {% if (cnfg.en_aurora_1 or cnfg.en_qlink_gty) and c_reg == 0 %}

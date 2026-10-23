@@ -1,6 +1,30 @@
 ##
+## Versal short-circuit
+##
+## Almost nothing in this file applies to a Versal networking build. The MAC is
+## a block design (see cr_dcmac.tcl), not an IP created here; network_stack is
+## bypassed (EN_NET_RAW is mandatory on Versal); and RDMA/TCP are unavailable.
+## What remains instantiated on that path is exactly one IP: the async AXIS FIFO
+## that network_top uses to cross the raw stream between nclk and aclk, and that
+## network_ccross_early uses when CROSS_EARLY=1.
+##
+## This is an early return rather than a set of per-IP guards because several of
+## the IPs below are simply not offered for Versal parts and fail at create_ip
+## even though nothing instantiates them - vio 3.0 and the legacy
+## axis_interconnect 1.1 among them. Guarding them one at a time turns each into
+## a separate failed build.
+##
+## Revisit if the network stack is ever built for a Versal part.
+##
+if {$cfg(fpga_arch) eq "versal"} {
+    create_ip -name axis_data_fifo -vendor xilinx.com -library ip -version 2.0 -module_name axis_data_fifo_net_ccross_early_512
+    set_property -dict [list CONFIG.TDATA_NUM_BYTES {64} CONFIG.IS_ACLK_ASYNC {1} CONFIG.FIFO_DEPTH {512} CONFIG.HAS_TKEEP {1} CONFIG.HAS_TLAST {1} ] [get_ips axis_data_fifo_net_ccross_early_512]
+    return
+}
+
+##
 ## CMAC wrapper
-## 
+##
 
 # VIO link
 create_ip -name vio -vendor xilinx.com -library ip -version 3.0 -module_name vio_link
@@ -111,7 +135,13 @@ create_ip -name axis_data_fifo -vendor xilinx.com -library ip -version 2.0 -modu
 set_property -dict [list CONFIG.TDATA_NUM_BYTES {64} CONFIG.FIFO_MODE {2} CONFIG.HAS_TKEEP {1} CONFIG.HAS_TLAST {1} ] [get_ips axis_pkg_fifo_512]
 
 ## Frame padding
-create_ip -name ethernet_frame_padding_512 -vendor ethz.systems.fpga -library hls -version 0.1 -module_name ethernet_frame_padding_512_ip 
+# HLS IP from the fpga-network-stack submodule, and only ever instantiated by
+# network_module's CMAC branch. The Versal/DCMAC branch uses the RTL
+# eth_frame_padder_512 instead, so skip it there rather than requiring the
+# submodule to be built for a Versal part.
+if {$cfg(fpga_arch) ne "versal"} {
+    create_ip -name ethernet_frame_padding_512 -vendor ethz.systems.fpga -library hls -version 0.1 -module_name ethernet_frame_padding_512_ip
+}
 
 ## Fifos
 create_ip -name axis_data_fifo -vendor xilinx.com -library ip -version 2.0 -module_name axis_data_fifo_512_used
@@ -385,6 +415,12 @@ set_property -dict [list CONFIG.TDATA_NUM_BYTES {64} CONFIG.REG_CONFIG {8} ] [ge
 ##
 ## Network stack
 ##
+# Skipped entirely on raw-Ethernet builds, where network_top bypasses
+# network_stack. Two independent reasons: the four HLS cores come from the
+# fpga-network-stack submodule, and axis_interconnect v1.1 is a legacy IP not
+# offered for Versal parts - so on a V80 these would fail at create_ip even
+# though nothing instantiates them.
+if {$cfg(en_net_raw) eq 0} {
 
 create_ip -name ip_handler -vendor ethz.systems.fpga -library hls -version 2.0 -module_name ip_handler_ip 
 
@@ -405,6 +441,8 @@ set_property -dict [list CONFIG.C_NUM_SI_SLOTS {4} CONFIG.SWITCH_TDATA_NUM_BYTES
 
 create_ip -name axis_interconnect -vendor xilinx.com -library ip -version 1.1 -module_name axis_interconnect_512_2to1 
 set_property -dict [list CONFIG.C_NUM_SI_SLOTS {2} CONFIG.SWITCH_TDATA_NUM_BYTES {64} CONFIG.HAS_TSTRB {false} CONFIG.HAS_TID {false} CONFIG.HAS_TDEST {false} CONFIG.SWITCH_PACKET_MODE {true} CONFIG.C_SWITCH_MAX_XFERS_PER_ARB {0} CONFIG.C_M00_AXIS_REG_CONFIG {1} CONFIG.C_S00_AXIS_REG_CONFIG {1} CONFIG.C_S01_AXIS_REG_CONFIG {1} CONFIG.C_SWITCH_NUM_CYCLES_TIMEOUT {0} CONFIG.M00_AXIS_TDATA_NUM_BYTES {64} CONFIG.S00_AXIS_TDATA_NUM_BYTES {64} CONFIG.S01_AXIS_TDATA_NUM_BYTES {64} CONFIG.M00_S01_CONNECTIVITY {true}] [get_ips axis_interconnect_512_2to1]
+
+}
 
 ##
 ## Reserve

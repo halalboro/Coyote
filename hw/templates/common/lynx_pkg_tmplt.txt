@@ -68,6 +68,12 @@
 {% if cnfg.en_net %}
 `define EN_NET
 {% endif %}
+{% if cnfg.en_net_raw %}
+`define EN_NET_RAW
+{% endif %}
+{% if cnfg.fpga_arch == 'versal' %}
+`define FPGA_ARCH_VERSAL
+{% endif %}
 {% if cnfg.en_nclk %}
 `define EN_NCLK
 {% endif %}

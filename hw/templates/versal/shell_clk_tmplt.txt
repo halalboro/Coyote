@@ -6,6 +6,20 @@ create_clock -period {{ cnfg.sclk_p }} [get_ports xclk];
 # There should be no clock buffers when crossing PR boundaries (Vivado 73360)
 set_property CLOCK_BUFFER_TYPE NONE [get_ports xclk]
 
-# Placeholder: DCMAC clocks --- TODO (Versal): Modify accordingly for V80 when adding network support
-create_clock -period 6.206 [get_ports gt0_refclk_p];
-create_clock -period 6.206 [get_ports gt1_refclk_p];
+{% if cnfg.en_net %}
+# DCMAC GT reference clock: 322.265625 MHz -> 3.103 ns. Everything downstream
+# (the 782 MHz core clock, the 390.625 MHz AXIS clock and the 100 MHz free-
+# running clock) is derived from this inside the block design, so this is the
+# only network clock that has to be declared here.
+#
+# The port depends on the DCMAC index: EN_NET_0 -> gt0 (bank 209, qsfp0),
+# EN_NET_1 -> gt1 (bank 111, qsfp3). The package pin LOCs live in
+# hw/constraints/v80/dynamic/impl/v80_shell_net_0.xdc — they cannot go here,
+# because this file is added with used_in_implementation false.
+{% if cnfg.en_net_0 %}
+create_clock -period 3.103 [get_ports gt0_refclk_p];
+{% endif %}
+{% if cnfg.en_net_1 %}
+create_clock -period 3.103 [get_ports gt1_refclk_p];
+{% endif %}
+{% endif %}
