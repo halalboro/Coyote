@@ -78,6 +78,10 @@ env_common = Environment(loader=FileSystemLoader(template_dir_common), trim_bloc
 template_dir_platform = root_dir + '/hw/templates/${FPGA_ARCH}'
 env_platform = Environment(loader=FileSystemLoader(template_dir_platform), trim_blocks=True, lstrip_blocks=True)
 
+# Static layer; Zynq-based platforms share the UltraScale+ fabric templates, but replace the PCIe static layer
+template_dir_static = root_dir + '/hw/templates/zynq_us_plus' if cfg['host_if'] == 'zynq' else template_dir_platform
+env_static = Environment(loader=FileSystemLoader(template_dir_static), trim_blocks=True, lstrip_blocks=True)
+
 # Device wrappers
 def renderhdl(env, template_input, gen_dir, header = 0, ext = '') :
     template = env.get_template(template_input + '_tmplt.txt')
@@ -112,7 +116,7 @@ if arg1 == 0 :
     renderhdl(env_common, 'cyt_top', static_dir, 0)
 
     # Static layer
-    renderhdl(env_platform, 'static_top', static_dir, 0)
+    renderhdl(env_static, 'static_top', static_dir, 0)
     
     # Shell layer
     renderhdl(env_common, 'shell_top', static_dir, 0)

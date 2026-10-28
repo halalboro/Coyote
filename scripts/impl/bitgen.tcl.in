@@ -48,7 +48,12 @@ if {$cfg(en_pr) eq 0} {
     if {$cfg(build_static) eq 1} {
         # Coyote top; including the shell and the static layer
         if {$cfg(fpga_arch) eq "ultrascale_plus"} {
-            write_bitstream -force -no_partial_bitfile "$bit_dir/cyt_top.bit"
+            if {$cfg(host_if) eq "zynq"} {
+                # On Zynq-based platforms, the bitstream is loaded from Linux (FPGA manager), which expects the .bin format
+                write_bitstream -force -no_partial_bitfile -bin_file "$bit_dir/cyt_top.bit"
+            } else {
+                write_bitstream -force -no_partial_bitfile "$bit_dir/cyt_top.bit"
+            }
             write_debug_probes -no_partial_ltxfile -force "$bit_dir/cyt_top.ltx"
         } elseif {$cfg(fpga_arch) eq "versal"} {
             write_device_image -force -no_partial_pdifile "$bit_dir/cyt_top.pdi"

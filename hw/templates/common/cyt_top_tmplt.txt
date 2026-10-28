@@ -38,7 +38,7 @@ import lynxTypes::*;
 // ================-----------------------------------------------------------------
 
 module cyt_top (
-{% if cnfg.fdev != 'v80' %}
+{% if cnfg.fdev != 'v80' and cnfg.host_if != 'zynq' %}
     // TODO (Versal): Add networking support
     // GT 0
     (* io_buffer_type = "none" *) input  wire[3:0]            gt0_rxp_in,
@@ -274,7 +274,7 @@ module cyt_top (
     output wire[2*N_LANES-1:0]  ccpi_txp
     {% endif %}
     // PCIe
-    {% if cnfg.fpga_arch == 'ultrascale_plus' %}
+    {% if cnfg.fpga_arch == 'ultrascale_plus' and cnfg.host_if != 'zynq' %}
     input  wire[0:0]                pcie_clk_clk_n,
     input  wire[0:0]                pcie_clk_clk_p,
     input  wire[PCIE_GT_BITS-1:0]   pcie_x16_rxn,
@@ -360,6 +360,7 @@ module cyt_top (
 
         .s_wback(wback_sh2st),
 
+{% if cnfg.host_if != 'zynq' %}
         // I/O
         .pcie_clk_clk_n(pcie_clk_clk_n),
         .pcie_clk_clk_p(pcie_clk_clk_p),
@@ -367,6 +368,7 @@ module cyt_top (
         .pcie_x16_rxp(pcie_x16_rxp),
         .pcie_x16_txn(pcie_x16_txn),
         .pcie_x16_txp(pcie_x16_txp),
+{% endif %}
 
         // Debug
         .dyn_bscan_drck(dyn_bscan_drck),
@@ -507,7 +509,7 @@ module cyt_top (
         .m_dma_wr_req_{{ i }}_rsp     (dma_wr_req_sh2st[{{ i }}].rsp),
 
     {% endfor %}
-    {% if cnfg.fdev != 'v80' %}  
+    {% if cnfg.fdev != 'v80' and cnfg.host_if != 'zynq' %}
         // I/O
         .gt0_rxp_in(gt0_rxp_in),
         .gt0_rxn_in(gt0_rxn_in),

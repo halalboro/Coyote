@@ -717,7 +717,7 @@ int vfpga_dev_mmap(struct file *file, struct vm_area_struct *vma) {
         
         // dma_mmap_coherent expects vma->pg_offs to be 0; hence MMAP_WB was changed to 0 and MMAP_CTRL to 3
         int ret_val = dma_mmap_coherent(
-            &device->bd_data->pci_dev->dev, vma, (void *) device->wb_addr_virt, device->wb_phys_addr, WB_SIZE 
+            device->bd_data->dev, vma, (void *) device->wb_addr_virt, device->wb_phys_addr, WB_SIZE
         );
 
         if (ret_val) {

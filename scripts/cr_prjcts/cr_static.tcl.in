@@ -69,6 +69,17 @@ set_property "target_language" "Verilog"                    $proj
 set_property "simulator_language" "Mixed"                   $proj
 set_property "xpm_libraries" "XPM_CDC XPM_MEMORY"           $proj
 
+# On Zynq-based platforms, the board part (if the board files are installed) provides the PS presets (DDR, MIO etc.)
+# These are only needed when booting from this design; loading the bitstream from Linux works without them
+if {$cfg(host_if) eq "zynq"} {
+    set board_part [lindex [get_board_parts -quiet -latest_file_version "*$cfg(fdev)*"] 0]
+    if {$board_part ne ""} {
+        set_property "board_part" $board_part $proj
+    } else {
+        puts "[color $clr_flow "** WARNING: No board files found for $cfg(fdev); the PS will be configured without board presets"]"
+    }
+}
+
 ########################################################################################################
 # CREATE & ADD FILES
 ########################################################################################################
@@ -116,6 +127,9 @@ set_property target_constrs_file "$proj_dir/$project.srcs/constrs_1/local.xdc" [
 #     source "$scripts_dir/ip_inst/pci_infrastructure.tcl" -notrace
 # }
 source "$scripts_dir/ip_inst/pci_infrastructure.tcl" -notrace
+if {$cfg(host_if) eq "zynq"} {
+    source "$scripts_dir/ip_inst/zynq_infrastructure.tcl" -notrace
+}
 
 ########################################################################################################
 # STATIC BLOCK DESIGN
@@ -131,7 +145,11 @@ source "$scripts_dir/ip_inst/pci_infrastructure.tcl" -notrace
 #     set_property SYNTH_CHECKPOINT_MODE "Hierarchical" [get_files design_static.bd ]
 # }
 
-source "$hw_dir/bd/$cfg(fpga_arch)/cr_pci.tcl" -notrace
+if {$cfg(host_if) eq "zynq"} {
+    source "$hw_dir/bd/zynq_us_plus/cr_ps.tcl" -notrace
+} else {
+    source "$hw_dir/bd/$cfg(fpga_arch)/cr_pci.tcl" -notrace
+}
 cr_bd_design_static ""
 set_property SYNTH_CHECKPOINT_MODE "Hierarchical" [get_files design_static.bd ]
 

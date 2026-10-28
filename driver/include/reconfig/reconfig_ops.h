@@ -35,6 +35,10 @@
 #include "pci_xdma.h"
 #endif
 
+#ifdef PLATFORM_ZYNQ
+#include "zynq_plat.h"
+#endif
+
 #include "coyote_defs.h"
 #include "reconfig_hw.h"
 #include "reconfig_isr.h"

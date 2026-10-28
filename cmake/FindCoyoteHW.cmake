@@ -37,8 +37,13 @@ file(MAKE_DIRECTORY ${IPREPO_DIR})
 ############################################
 ##            USER CONFIGURATION          ##
 ############################################
-# Target FPGA device; supported Alveo U55C, Alveo U280, Alveo U250, Alveo U200, Alveo V80
+# Target FPGA device; supported Alveo U55C, Alveo U280, Alveo U250, Alveo U200, Alveo V80, ZCU216 (experimental)
 set(FDEV_NAME "0" CACHE STRING "Target FPGA device")
+
+# Host interface of the static layer; set automatically from the target device (see validation_checks_hw)
+# pcie: the FPGA is a PCIe card attached to an x86 host (XDMA/QDMA static layer)
+# zynq: the host is the on-chip Zynq UltraScale+ processing system (AXI DataMover static layer)
+set(HOST_IF "pcie")
 
 ##
 ## BUILD CONFIGURATION
@@ -454,11 +459,58 @@ macro(validation_checks_hw)
                 set(SCLK_F 333)
             endif()
         
+        # zcu216 (experimental)
+        # Zynq UltraScale+ RFSoC; the host is the on-chip ARM processing system (PS), not a PCIe-attached x86 server
+        # The fabric is UltraScale+, so the shell and dynamic layers are shared with the Alveo cards; only the static layer differs
+        elseif(FDEV_NAME STREQUAL "zcu216")
+            # Platform details
+            set(FPGA_ARCH "ultrascale_plus")
+            set(HOST_IF "zynq")
+            set(FPGA_PART xczu49dr-ffvf1760-2-e CACHE STRING "FPGA Part" FORCE)
+
+            # TODO (ZCU216): The board has PL-side DDR4, which could be used as card memory in the future
+            # For now, only host (PS DDR4) memory is supported
+            set(DDR_SIZE 0)
+            set(N_DDR_CHAN 0)
+
+            # No HBM on the zcu216
+            set(HCLK_F 1)
+            set(HBM_SIZE 0)
+
+            # No card memory, hence no striping
+            set(MC_SIZE 0)
+            set(N_STRIPE_CHAN 0)
+            set(MEM_OFFSET 0)
+
         # Fail on unsupported device
         else()
             message(FATAL_ERROR "Target device not supported.")
         endif()
         message("** Target platform ${FDEV_NAME}")
+
+        # Zynq-based platforms (experimental): only host streams are supported for now
+        # There is no pre-built static checkpoint or floorplan, so the full design is built with BUILD_STATIC=1
+        if(HOST_IF STREQUAL "zynq")
+            if(NOT BUILD_STATIC)
+                message(FATAL_ERROR "${FDEV_NAME}: no pre-built static layer checkpoint is available; use the static build flow (BUILD_STATIC=1, BUILD_SHELL=0).")
+            endif()
+            if(EN_SHELL_PBLOCK)
+                message(FATAL_ERROR "${FDEV_NAME}: no shell floorplan is available yet; set EN_SHELL_PBLOCK=0.")
+            endif()
+            if(EN_PR)
+                message(FATAL_ERROR "${FDEV_NAME}: application-level reconfiguration (EN_PR=1) is not supported yet.")
+            endif()
+            if(EN_MEM)
+                message(FATAL_ERROR "${FDEV_NAME}: card memory (EN_MEM=1) is not supported yet.")
+            endif()
+            if(EN_RDMA OR EN_TCP OR EN_SNIFFER)
+                message(FATAL_ERROR "${FDEV_NAME}: networking is not supported yet.")
+            endif()
+            if(EN_AVX)
+                message("** AVX instructions not available on the ARM host of ${FDEV_NAME}. Force disable.")
+                set(EN_AVX 0)
+            endif()
+        endif()
 
         # Three host channels: streaming data host <-> vFPGA, migration channel (sync/offload), and, PR & WB channel
         set(N_HCHAN 3)

@@ -131,7 +131,7 @@ module shell_top (
     {% endfor %}
 
     // GT 0
-    {% if cnfg.fdev != 'v80' %}  
+    {% if cnfg.fdev != 'v80' and cnfg.host_if != 'zynq' %}
     (* io_buffer_type = "none" *) input  logic[3:0]                         gt0_rxp_in,
     (* io_buffer_type = "none" *) input  logic[3:0]                         gt0_rxn_in,
     (* io_buffer_type = "none" *) output  logic[3:0]                        gt0_txp_out,

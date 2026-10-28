@@ -564,6 +564,7 @@ int pci_probe(struct pci_dev *pdev, const struct pci_device_id *id) {
 
     // Set device private bd_data; so that we can access it later (both the PCI device and the bus driver bd_data)
     bd_data->pci_dev = pdev;
+    bd_data->dev = &pdev->dev;
     dev_set_drvdata(&pdev->dev, bd_data);
 
     // Obtain a (dynamic) major and minor number for the vFPGA device and reconfig device

@@ -370,18 +370,18 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
             // Generally, for the hardware TLB, only the starting address of the page is needed
             // The exact physical address is calculated from the starting address and the virtual address offset
             user_pg->hpages[i] = dma_map_single(
-                &device->bd_data->pci_dev->dev,
+                device->bd_data->dev,
                 page_to_virt(user_pg->pages[i]),
                 device->bd_data->ltlb_meta->page_size,
                 DMA_BIDIRECTIONAL
             );
 
-            if (dma_mapping_error(&device->bd_data->pci_dev->dev, user_pg->hpages[i])) {
+            if (dma_mapping_error(device->bd_data->dev, user_pg->hpages[i])) {
                 pr_warn("failed to map user pages and obtain physical address");
                 goto fail_dma_map;
             }
 
-            if (dma_need_sync(&device->bd_data->pci_dev->dev, user_pg->hpages[i])) {
+            if (dma_need_sync(device->bd_data->dev, user_pg->hpages[i])) {
                 pr_warn("the DMA buffer with virt_addr %lx, phys_addr %lx, may be subject to cache coherency issues and may require explicit synchronization which is not supported out of the box by Coyote\n", 
                     (unsigned long) page_to_virt(user_pg->pages[i]), (unsigned long) user_pg->hpages[i]
                 );
@@ -401,18 +401,18 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
         // and obtain its physical address
         for (int i = 0; i < pf_desc->n_pages; i++) {
             user_pg->hpages[i] = dma_map_single(
-                &device->bd_data->pci_dev->dev,
+                device->bd_data->dev,
                 page_to_virt(user_pg->pages[i]),
                 PAGE_SIZE,
                 DMA_BIDIRECTIONAL
             );
 
-            if (dma_mapping_error(&device->bd_data->pci_dev->dev, user_pg->hpages[i])) {
+            if (dma_mapping_error(device->bd_data->dev, user_pg->hpages[i])) {
                 pr_warn("failed to map user pages and obtain physical address");
                 goto fail_dma_map;
             }
 
-            if (dma_need_sync(&device->bd_data->pci_dev->dev, user_pg->hpages[i])) {
+            if (dma_need_sync(device->bd_data->dev, user_pg->hpages[i])) {
                 pr_warn("the DMA buffer with virt_addr %lx, phys_addr %lx, may be subject to cache coherency issues and may require explicit synchronization which is not supported out of the box by Coyote\n", 
                     (unsigned long) page_to_virt(user_pg->pages[i]), (unsigned long) user_pg->hpages[i]
                 );
@@ -503,7 +503,7 @@ fail_dma_map:
     pg_inc = pf_desc->hugepages ? device->bd_data->n_pages_in_huge : 1;
     pg_size = pf_desc->hugepages ? device->bd_data->ltlb_meta->page_size : PAGE_SIZE;
     for (int i = 0; i < pf_desc->n_pages; i+=pg_inc) {
-        dma_unmap_single(&device->bd_data->pci_dev->dev, user_pg->hpages[i], pg_size, DMA_BIDIRECTIONAL);
+        dma_unmap_single(device->bd_data->dev, user_pg->hpages[i], pg_size, DMA_BIDIRECTIONAL);
     }
 
     // Unpin the pages
@@ -527,7 +527,7 @@ fail_card_alloc:
     pg_inc = pf_desc->hugepages ? device->bd_data->n_pages_in_huge : 1;
     pg_size = pf_desc->hugepages ? device->bd_data->ltlb_meta->page_size : PAGE_SIZE;
     for (int i = 0; i < pf_desc->n_pages; i+=pg_inc) {
-        dma_unmap_single(&device->bd_data->pci_dev->dev, user_pg->hpages[i], pg_size, DMA_BIDIRECTIONAL);
+        dma_unmap_single(device->bd_data->dev, user_pg->hpages[i], pg_size, DMA_BIDIRECTIONAL);
     }
 
     // Unpin the pages
@@ -602,7 +602,7 @@ int tlb_put_user_pages(struct vfpga_dev *device, uint64_t vaddr, int32_t ctid, p
                 int pg_inc = tmp_entry->huge ? device->bd_data->n_pages_in_huge : 1;
                 int pg_size = tmp_entry->huge ? device->bd_data->ltlb_meta->page_size : PAGE_SIZE;
                 for (int i = 0; i < tmp_entry->n_pages; i+=pg_inc) {
-                    dma_unmap_single(&device->bd_data->pci_dev->dev, tmp_entry->hpages[i], pg_size, DMA_BIDIRECTIONAL);
+                    dma_unmap_single(device->bd_data->dev, tmp_entry->hpages[i], pg_size, DMA_BIDIRECTIONAL);
                 }
                 
                 // Unpin the pages
@@ -682,7 +682,7 @@ int tlb_put_user_pages_ctid(struct vfpga_dev *device, int32_t ctid, pid_t hpid, 
             int pg_inc = tmp_entry->huge ? device->bd_data->n_pages_in_huge : 1;
             int pg_size = tmp_entry->huge ? device->bd_data->ltlb_meta->page_size : PAGE_SIZE;
             for (int i = 0; i < tmp_entry->n_pages; i+=pg_inc) {
-                dma_unmap_single(&device->bd_data->pci_dev->dev, tmp_entry->hpages[i], pg_size, DMA_BIDIRECTIONAL);
+                dma_unmap_single(device->bd_data->dev, tmp_entry->hpages[i], pg_size, DMA_BIDIRECTIONAL);
             }
             
             // Unpin the pages
@@ -888,7 +888,7 @@ int p2p_attach_dma_buf(struct vfpga_dev *device, int buf_fd, uint64_t vaddr, int
     int ret_val = 0;
     
     BUG_ON(!device);
-    struct device *dev = &device->bd_data->pci_dev->dev;
+    struct device *dev = device->bd_data->dev;
     struct bus_driver_data *bd_data = device->bd_data;
     BUG_ON(!dev);
     BUG_ON(!bd_data);

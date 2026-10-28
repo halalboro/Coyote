@@ -55,6 +55,13 @@ void drop_irq_pfault(struct vfpga_dev *device, bool write, int32_t ctid) {
 void clear_irq(struct vfpga_dev *device) {
     BUG_ON(!device);
     device->cnfg_regs->isr_ctrl = FPGA_CNFG_CTRL_IRQ_CLR_PENDING;
+
+    #ifdef PLATFORM_ZYNQ
+    // On Zynq platforms, the interrupts are level-sensitive; make sure the (posted) write has reached
+    // the FPGA before the ISR returns, otherwise the ISR may be re-entered for the same interrupt
+    wmb();
+    (void) READ_ONCE(device->cnfg_regs->isr_ctrl);
+    #endif
 }
 
 void restart_mmu(struct vfpga_dev *device, bool write, int32_t ctid) {

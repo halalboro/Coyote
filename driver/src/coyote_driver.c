@@ -57,7 +57,7 @@ MODULE_IMPORT_NS(DMA_BUF);
 #endif
 
 static int __init coyote_init(void) {
-    pr_info("Loading Coyote PCIe driver...\n");
+    pr_info("Loading Coyote driver...\n");
     return pci_init();
 }
 

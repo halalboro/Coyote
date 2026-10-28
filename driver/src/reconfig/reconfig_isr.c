@@ -38,6 +38,11 @@ irqreturn_t reconfig_isr(int irq, void *dev) {
 
     // Clear IRQ by writing to memory-mapped register and unlock
     device->bd_data->stat_cnfg->reconfig_ctrl = RECONFIG_CTRL_IRQ_CLR_PENDING;
+    #ifdef PLATFORM_ZYNQ
+    // Level-sensitive interrupt; see clear_irq in vfpga_hw.c
+    wmb();
+    (void) READ_ONCE(device->bd_data->stat_cnfg->reconfig_ctrl);
+    #endif
     spin_unlock_irqrestore(&(device->irq_lock), flags);
 
     return IRQ_HANDLED;

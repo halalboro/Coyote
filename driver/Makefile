@@ -36,10 +36,15 @@ ccflags-y += -DPLATFORM_VERSAL
 else ifeq ($(TARGET_PLATFORM), ultrascale_plus)
 coyote_driver-objs += src/platform/pci_xdma.o
 ccflags-y += -DPLATFORM_ULTRASCALE_PLUS
+else ifeq ($(TARGET_PLATFORM), zynq)
+coyote_driver-objs += src/platform/zynq_plat.o
+ccflags-y += -DPLATFORM_ZYNQ
 else
-$(error "Unsupported TARGET_PLATFORM specified. Supported options are: ultrascale_plus, versal")
+$(error "Unsupported TARGET_PLATFORM specified. Supported options are: ultrascale_plus, versal, zynq")
 endif
+ifneq ($(TARGET_PLATFORM), zynq)
 coyote_driver-objs += src/platform/pci_util.o
+endif
 
 coyote_driver-objs += src/reconfig/reconfig_hw.o 
 coyote_driver-objs += src/reconfig/reconfig_isr.o

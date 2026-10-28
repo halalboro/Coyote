@@ -338,7 +338,8 @@ extern bool en_hmm;
 // If more needed, change value and recompile driver. On UltraScale+ devices,
 // there is no fine-grained control over the memory bank to which a buffer is
 // allocated; that is N_MEM_BLOCKS is equal to 1
-#ifdef PLATFORM_ULTRASCALE_PLUS
+// Zynq platforms share the UltraScale+ fabric (and card memory is not supported yet), hence the same constants
+#if defined(PLATFORM_ULTRASCALE_PLUS) || defined(PLATFORM_ZYNQ)
     #define N_MEM_BLOCKS 1
     #define MEM_BLOCK_SIZE 0    // doesn't matter; effectively unused in this case but needed to compile
     #define MEM_START (256UL * 1024UL * 1024UL)
@@ -1103,7 +1104,8 @@ static const struct kobject cyt_kobj_empty;
 struct bus_driver_data {
     /// PCI device
     int dev_id;                             /* PCI device ID */
-    struct pci_dev *pci_dev;                /* Associated PCI device structure */
+    struct pci_dev *pci_dev;                /* Associated PCI device structure; NULL on Zynq platforms */
+    struct device *dev;                     /* Associated (bus-agnostic) device, used for DMA mappings; &pci_dev->dev on PCI platforms */
     
     // Char devices metadata
     char vfpga_dev_name[MAX_CHAR_FDEV];     /* Template for vFPGA device names; each vFPGA device will have a unique name based on this template */

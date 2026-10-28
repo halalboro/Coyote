@@ -466,7 +466,7 @@ int setup_vfpga_devices(struct bus_driver_data *data) {
 
         // Set-up writeback memory if enabled; used for polling transfer completions
         if (data->en_wb) {
-            data->vfpga_dev[i].wb_addr_virt  = dma_alloc_coherent(&data->pci_dev->dev, WB_SIZE, &data->vfpga_dev[i].wb_phys_addr, GFP_KERNEL);
+            data->vfpga_dev[i].wb_addr_virt  = dma_alloc_coherent(data->dev, WB_SIZE, &data->vfpga_dev[i].wb_phys_addr, GFP_KERNEL);
             if (!data->vfpga_dev[i].wb_addr_virt) {
                 pr_err("failed to allocate writeback memory\n");
                 goto err_wb;
@@ -537,13 +537,13 @@ err_char_reg:
 	}
     if (data->en_wb) {
         set_memory_wb((uint64_t)data->vfpga_dev[i].wb_addr_virt, N_WB_PAGES);
-        dma_free_coherent(&data->pci_dev->dev, WB_SIZE, data->vfpga_dev[i].wb_addr_virt, data->vfpga_dev[i].wb_phys_addr);
+        dma_free_coherent(data->dev, WB_SIZE, data->vfpga_dev[i].wb_addr_virt, data->vfpga_dev[i].wb_phys_addr);
     }
 err_wb:
     if (data->en_wb) {
         for (int j = 0; j < i; j++) {
             set_memory_wb((uint64_t)data->vfpga_dev[j].wb_addr_virt, N_WB_PAGES);
-            dma_free_coherent(&data->pci_dev->dev, WB_SIZE, data->vfpga_dev[j].wb_addr_virt, data->vfpga_dev[j].wb_phys_addr);
+            dma_free_coherent(data->dev, WB_SIZE, data->vfpga_dev[j].wb_addr_virt, data->vfpga_dev[j].wb_phys_addr);
         }
     }
     destroy_workqueue(data->vfpga_dev[i].wqueue_notify);
@@ -593,7 +593,7 @@ void teardown_vfpga_devices(struct bus_driver_data *data) {
 
         if(data->en_wb) {
             set_memory_wb((uint64_t)data->vfpga_dev[i].wb_addr_virt, N_WB_PAGES);
-            dma_free_coherent(&data->pci_dev->dev, WB_SIZE, data->vfpga_dev[i].wb_addr_virt, data->vfpga_dev[i].wb_phys_addr);
+            dma_free_coherent(data->dev, WB_SIZE, data->vfpga_dev[i].wb_addr_virt, data->vfpga_dev[i].wb_phys_addr);
         }
 
         destroy_workqueue(data->vfpga_dev[i].wqueue_notify);

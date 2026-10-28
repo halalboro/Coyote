@@ -1,0 +1,60 @@
+// Device tree overlay for Coyote on the ZCU216 (experimental)
+//
+// Loads the bitstream (fragment@0) and adds the Coyote platform device (fragment@1), matched by
+// the Coyote driver built with TARGET_PLATFORM=zynq; see driver/src/platform/zynq_plat.c
+//
+// Build and apply (as root), with cyt_top.bin copied to /lib/firmware:
+//   dtc -@ -I dts -O dtb -o coyote_zcu216.dtbo coyote_zcu216.dtso
+//   mkdir /sys/kernel/config/device-tree/overlays/coyote
+//   cat coyote_zcu216.dtbo > /sys/kernel/config/device-tree/overlays/coyote/dtbo
+//   insmod coyote_driver.ko
+//
+// If the bitstream is loaded by other means (e.g., PYNQ or fpgautil), remove fragment@0
+// The addresses, interrupts and clocks below must match hw/bd/zynq_us_plus/cr_ps.tcl
+
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target = <&fpga_full>;
+        __overlay__ {
+            firmware-name = "cyt_top.bin";
+
+            // pl_clk0 (PL0_REF) must be 100 MHz; all static layer clocks are generated from it
+            clocking0: clocking0 {
+                compatible = "xlnx,fclk";
+                #clock-cells = <0>;
+                clocks = <&zynqmp_clk 71>;
+                assigned-clocks = <&zynqmp_clk 71>;
+                assigned-clock-rates = <100000000>;
+                clock-output-names = "fabric_clk";
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&amba>;
+        __overlay__ {
+            coyote@a0000000 {
+                compatible = "ethz,coyote-zynqmp";
+
+                // Static (axi_cnfg, M_AXI_HPM1_FPD) and shell (axi_main, M_AXI_HPM0_FPD) configuration windows
+                reg = <0x0 0xb0000000 0x0 0x00100000>,
+                      <0x0 0xa0000000 0x0 0x10000000>;
+                reg-names = "stat", "shell";
+
+                // Interrupt i corresponds to Coyote IRQ vector i: vFPGAs 0-14, reconfiguration 15
+                // pl_ps_irq0[7:0] are GIC SPIs 89-96, pl_ps_irq1[7:0] are GIC SPIs 104-111; all level-sensitive, active-high (4)
+                interrupt-parent = <&gic>;
+                interrupts = <0 89 4>, <0 90 4>, <0 91 4>, <0 92 4>,
+                             <0 93 4>, <0 94 4>, <0 95 4>, <0 96 4>,
+                             <0 104 4>, <0 105 4>, <0 106 4>, <0 107 4>,
+                             <0 108 4>, <0 109 4>, <0 110 4>, <0 111 4>;
+
+                // Host memory is accessed through the coherent HPC ports; required, since Coyote never syncs caches explicitly
+                dma-coherent;
+            };
+        };
+    };
+};

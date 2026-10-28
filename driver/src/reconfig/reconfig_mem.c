@@ -78,13 +78,13 @@ int alloc_reconfig_buffer(struct reconfig_dev *device, unsigned long n_pages, pi
 
     for (i = 0; i < device->curr_buff.n_pages; i++) {
         device->curr_buff.hpages[i] = dma_map_single(
-            &device->bd_data->pci_dev->dev,
+            device->bd_data->dev,
             page_to_virt(device->curr_buff.pages[i]),
             RECONFIG_BUFF_PAGE_SIZE,
             DMA_TO_DEVICE
         );
 
-        if (dma_mapping_error(&device->bd_data->pci_dev->dev, device->curr_buff.hpages[i])) {
+        if (dma_mapping_error(device->bd_data->dev, device->curr_buff.hpages[i])) {
             pr_warn("failed to map reconfig page %d and obtain its physical address", i);
             goto fail_dma_map;
         }
@@ -98,7 +98,7 @@ int alloc_reconfig_buffer(struct reconfig_dev *device, unsigned long n_pages, pi
 fail_dma_map:
     // Unmap DMA
     for (int j = 0; j < i; j++) {
-        dma_unmap_single(&device->bd_data->pci_dev->dev, device->curr_buff.hpages[j], RECONFIG_BUFF_PAGE_SIZE, DMA_TO_DEVICE);
+        dma_unmap_single(device->bd_data->dev, device->curr_buff.hpages[j], RECONFIG_BUFF_PAGE_SIZE, DMA_TO_DEVICE);
     }
     vfree(device->curr_buff.hpages);
     i = device->curr_buff.n_pages;
@@ -125,7 +125,7 @@ int free_reconfig_buffer(struct reconfig_dev *device, uint64_t vaddr, pid_t pid,
             for (int i = 0; i < tmp_buff->n_pages; i++) {
                 if (tmp_buff->pages[i]) {
                     dma_unmap_single(
-                        &device->bd_data->pci_dev->dev,
+                        device->bd_data->dev,
                         tmp_buff->hpages[i],
                         RECONFIG_BUFF_PAGE_SIZE,
                         DMA_TO_DEVICE

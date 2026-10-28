@@ -137,6 +137,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 add_compile_options("-march=native")
 
+# AVX is only available on x86 hosts; e.g., not on the ARM processor of Zynq platforms
+if(EN_AVX AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i[3-6]86")
+    message("** AVX not available on ${CMAKE_SYSTEM_PROCESSOR}. Force disable.")
+    set(EN_AVX 0)
+endif()
+
 # Source files, includes
 file(GLOB CYT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 add_library(Coyote SHARED ${CYT_SOURCES})
