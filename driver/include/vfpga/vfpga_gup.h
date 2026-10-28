@@ -49,6 +49,12 @@
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
 #define mmap_read_lock(mm) down_read(&(mm)->mmap_sem)
 #define mmap_read_unlock(mm) up_read(&(mm)->mmap_sem)
+
+// dma_need_sync was added in 5.8; before that, a sync is needed whenever the device is not DMA-coherent
+#include <linux/dma-noncoherent.h>
+static inline bool dma_need_sync(struct device *dev, dma_addr_t dma_addr) {
+    return !dev_is_dma_coherent(dev);
+}
 #endif
 
 /**

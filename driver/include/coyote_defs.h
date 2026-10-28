@@ -61,6 +61,13 @@
 #include <linux/semaphore.h>
 #include <linux/rwsem.h>
 #include <asm/set_memory.h>
+
+// set_memory_uc/wb are x86-only; on arm64, dma_alloc_coherent already returns
+// a mapping with the right attributes (non-cacheable, or cacheable when the device is dma-coherent)
+#ifdef PLATFORM_ZYNQ
+    static inline int set_memory_uc(unsigned long addr, int numpages) { return 0; }
+    static inline int set_memory_wb(unsigned long addr, int numpages) { return 0; }
+#endif
 #include <linux/hashtable.h>
 #include <linux/moduleparam.h>
 #include <linux/stat.h>

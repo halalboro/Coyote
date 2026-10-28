@@ -642,11 +642,20 @@ int vfpga_dev_mmap(struct file *file, struct vm_area_struct *vma) {
     // Obtain vFPGA device from file private data (set during open) and check device is not NULL
     struct vfpga_dev *device = (struct vfpga_dev *) file->private_data;
     BUG_ON(!device);
+    unsigned long vma_size = vma->vm_end - vma->vm_start;
 
+    // On Zynq, the writeback region is normal memory; dma_mmap_coherent picks the right attributes for it
+    #ifdef PLATFORM_ZYNQ
+    if (vma->vm_pgoff != MMAP_WB)
+    #endif
     vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
     // Memory map user registers (CSR) in vFPGAs; the ones parsed from axi_ctrl interface in the vFPGA
     if (vma->vm_pgoff == MMAP_CTRL) {
+        if (vma_size != VFPGA_CTRL_USER_SIZE) {
+            pr_warn("invalid mapping size %lx for region %d\n", vma_size, MMAP_CTRL);
+            return -EINVAL;
+        }
         dbg_info(
             "fpga dev. %d, memory mapping user ctrl region at %llx of size %x\n",
             device->id, device->vfpga_cnfg_phys_addr + VFPGA_CTRL_USER_OFFS, VFPGA_CTRL_USER_SIZE
@@ -668,6 +677,10 @@ int vfpga_dev_mmap(struct file *file, struct vm_area_struct *vma) {
 
     // Memory map vFPGA config (non-AVX) region (cnfg_slave)
     if (vma->vm_pgoff == MMAP_CNFG) {
+        if (vma_size != VFPGA_CTRL_CNFG_SIZE) {
+            pr_warn("invalid mapping size %lx for region %d\n", vma_size, MMAP_CNFG);
+            return -EINVAL;
+        }
         dbg_info(
             "fpga dev. %d, memory mapping config region at %llx of size %x\n",
             device->id, device->vfpga_cnfg_phys_addr + VFPGA_CTRL_CNFG_OFFS, VFPGA_CTRL_CNFG_SIZE
@@ -689,6 +702,15 @@ int vfpga_dev_mmap(struct file *file, struct vm_area_struct *vma) {
 
     // Memory map shell config (AVX) region (cnfg_slave_avx)
     if (vma->vm_pgoff == MMAP_CNFG_AVX) {
+        // Without AVX, there is no AVX config slave in the shell; accesses to it would fault the bus
+        if (!device->bd_data->en_avx) {
+            pr_warn("AVX config region requested, but AVX is not enabled in the shell\n");
+            return -EINVAL;
+        }
+        if (vma_size != VFPGA_CTRL_CNFG_AVX_SIZE) {
+            pr_warn("invalid mapping size %lx for region %d\n", vma_size, MMAP_CNFG_AVX);
+            return -EINVAL;
+        }
         dbg_info(
             "fpga dev. %d, memory mapping config AVX region at %llx of size %x\n",
             device->id, device->vfpga_cnfg_avx_phys_addr, VFPGA_CTRL_CNFG_AVX_SIZE

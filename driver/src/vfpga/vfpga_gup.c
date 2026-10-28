@@ -336,7 +336,7 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
         ret_val = pin_user_pages_remote(curr_mm, (unsigned long) pf_desc->vaddr << PAGE_SHIFT, pf_desc->n_pages, FOLL_WRITE | FOLL_LONGTERM, user_pg->pages, NULL);
     #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
         ret_val = pin_user_pages_remote(curr_mm, (unsigned long) pf_desc->vaddr << PAGE_SHIFT, pf_desc->n_pages, FOLL_WRITE | FOLL_LONGTERM, user_pg->pages, NULL, NULL);
-    #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
+    #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
         ret_val = pin_user_pages_remote(curr_task, curr_mm, (unsigned long) pf_desc->vaddr << PAGE_SHIFT, pf_desc->n_pages, FOLL_WRITE | FOLL_LONGTERM, user_pg->pages, NULL, NULL);
     #else
         ret_val = get_user_pages_remote(curr_task, curr_mm, (unsigned long) pf_desc->vaddr << PAGE_SHIFT, pf_desc->n_pages, 1, user_pg->pages, NULL, NULL);
@@ -427,7 +427,7 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
         BUG_ON(!user_pg->cpages);
 
         int32_t target_block;
-        #ifdef PLATFORM_ULTRASCALE_PLUS
+        #if defined(PLATFORM_ULTRASCALE_PLUS) || defined(PLATFORM_ZYNQ)
         // On UltraScale+ devices, each memory channel can access the entire memory
         // Therefore, mem_block is ignored, since the entire memory is treated as one
         // partition with no fine-grained control over memory allocation
@@ -483,7 +483,7 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
 
 fail_host_alloc:
     // Unpin the pages
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
         unpin_user_pages(user_pg->pages, ret_val);
     #else
         for(int i = 0; i < ret_val; i++) {
@@ -507,7 +507,7 @@ fail_dma_map:
     }
 
     // Unpin the pages
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
         unpin_user_pages(user_pg->pages, pf_desc->n_pages);
     #else
         for(int i = 0; i < pf_desc->n_pages; i++) {
@@ -531,7 +531,7 @@ fail_card_alloc:
     }
 
     // Unpin the pages
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
         unpin_user_pages(user_pg->pages, pf_desc->n_pages);
     #else
         for(int i = 0; i < pf_desc->n_pages; i++) {
@@ -606,7 +606,7 @@ int tlb_put_user_pages(struct vfpga_dev *device, uint64_t vaddr, int32_t ctid, p
                 }
                 
                 // Unpin the pages
-                #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
+                #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
                     unpin_user_pages(tmp_entry->pages, tmp_entry->n_pages);
                 #else
                     for(int i = 0; i < tmp_entry->n_pages; i++) {
@@ -686,7 +686,7 @@ int tlb_put_user_pages_ctid(struct vfpga_dev *device, int32_t ctid, pid_t hpid, 
             }
             
             // Unpin the pages
-            #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
+            #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
                 unpin_user_pages(tmp_entry->pages, tmp_entry->n_pages);
             #else
                 for(int i = 0; i < tmp_entry->n_pages; i++) {
@@ -971,7 +971,7 @@ int p2p_attach_dma_buf(struct vfpga_dev *device, int buf_fd, uint64_t vaddr, int
         BUG_ON(!user_pg->cpages);
 
         int32_t target_block;
-        #ifdef PLATFORM_ULTRASCALE_PLUS
+        #if defined(PLATFORM_ULTRASCALE_PLUS) || defined(PLATFORM_ZYNQ)
         // On UltraScale+ devices, each memory channel can access the entire memory
         // Therefore, mem_block is ignored, since the entire memory is treated as one
         // partition with no fine-grained control over memory allocation

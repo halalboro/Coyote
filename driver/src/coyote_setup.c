@@ -33,21 +33,38 @@ int read_shell_config(struct bus_driver_data *data) {
     data->probe_shell = data->shell_cnfg->probe;
     dbg_info("deployment shell probe %08x\n", data->probe_shell);
 
+    // An all-zeros / all-ones probe means the FPGA is not configured with a Coyote bitstream (or the shell is held in reset)
+    if (data->probe_stat == 0 || data->probe_stat == 0xffffffff || data->probe_shell == 0 || data->probe_shell == 0xffffffff) {
+        pr_err("invalid static/shell probe (%08x/%08x); is a Coyote bitstream loaded?\n", data->probe_stat, data->probe_shell);
+        return -ENODEV;
+    }
+
     data->n_fpga_chan = data->shell_cnfg->n_chan;
     data->n_fpga_reg = data->shell_cnfg->n_regions;
     dbg_info("detected %d virtual FPGA regions, %d FPGA channels\n", data->n_fpga_reg, data->n_fpga_chan);
+
+    // vFPGA IDs index arrays of size MAX_N_REGIONS and IRQ vectors, of which FPGA_RECONFIG_IRQ_VECTOR is reserved
+    if (data->n_fpga_reg < 1 || data->n_fpga_reg > FPGA_RECONFIG_IRQ_VECTOR) {
+        pr_err("invalid number of vFPGA regions %d\n", data->n_fpga_reg);
+        return -ENODEV;
+    }
 
     data->en_avx = (data->shell_cnfg->ctrl_cnfg & EN_AVX_MASK) >> EN_AVX_SHIFT;
     data->en_wb = (data->shell_cnfg->ctrl_cnfg & EN_WB_MASK) >> EN_WB_SHIFT;
     dbg_info("enabled AVX %d, enabled writeback %d\n", data->en_avx,data->en_wb);
    
     data->stlb_meta = kzalloc(sizeof(struct tlb_metadata), GFP_KERNEL);
-    BUG_ON(!data->stlb_meta);
+    if (!data->stlb_meta)
+        return -ENOMEM;
     data->stlb_meta->hugepage = false;
     data->stlb_meta->key_size = (data->shell_cnfg->ctrl_cnfg & TLB_S_ORDER_MASK) >> TLB_S_ORDER_SHIFT;
     data->stlb_meta->assoc = (data->shell_cnfg->ctrl_cnfg & TLB_S_ASSOC_MASK) >> TLB_S_ASSOC_SHIFT;
     data->stlb_meta->page_shift = (data->shell_cnfg->ctrl_cnfg & TLB_S_PG_SHFT_MASK) >> TLB_S_PG_SHIFT_SHIFT;
-    BUG_ON(data->stlb_meta->page_shift != PAGE_SHIFT);
+    if (data->stlb_meta->page_shift != PAGE_SHIFT) {
+        pr_err("sTLB page shift %lld does not match the kernel page shift %d\n", data->stlb_meta->page_shift, PAGE_SHIFT);
+        ret_val = -ENODEV;
+        goto err_stlb;
+    }
     data->stlb_meta->page_size = PAGE_SIZE;
     data->stlb_meta->page_mask = PAGE_MASK;
     data->stlb_meta->key_mask = (1UL << data->stlb_meta->key_size) - 1UL;
@@ -58,7 +75,10 @@ int read_shell_config(struct bus_driver_data *data) {
     dbg_info("sTLB order %lld, sTLB assoc %d, sTLB page size %lld\n", data->stlb_meta->key_size, data->stlb_meta->assoc, data->stlb_meta->page_size);
 
     data->ltlb_meta = kzalloc(sizeof(struct tlb_metadata), GFP_KERNEL);
-    BUG_ON(!data->ltlb_meta);
+    if (!data->ltlb_meta) {
+        ret_val = -ENOMEM;
+        goto err_stlb;
+    }
     data->ltlb_meta->hugepage = true;
     data->ltlb_meta->key_size = (data->shell_cnfg->ctrl_cnfg & TLB_L_ORDER_MASK) >> TLB_L_ORDER_SHIFT;
     data->ltlb_meta->assoc = (data->shell_cnfg->ctrl_cnfg & TLB_L_ASSOC_MASK) >> TLB_L_ASSOC_SHIFT;
@@ -71,6 +91,11 @@ int read_shell_config(struct bus_driver_data *data) {
     data->ltlb_meta->phy_size = TLB_PADDR_RANGE - data->ltlb_meta->page_shift ;
     data->ltlb_meta->phy_mask = (1UL << data->ltlb_meta->phy_size) - 1UL;
     dbg_info("lTLB order %lld, lTLB assoc %d, lTLB page size %lld\n", data->ltlb_meta->key_size, data->ltlb_meta->assoc, data->ltlb_meta->page_size);
+    if (data->ltlb_meta->page_shift <= data->stlb_meta->page_shift || data->ltlb_meta->page_shift > 30) {
+        pr_err("invalid lTLB page shift %lld\n", data->ltlb_meta->page_shift);
+        ret_val = -ENODEV;
+        goto err_ltlb;
+    }
 
     data->dif_order_page_shift = data->ltlb_meta->page_shift - data->stlb_meta->page_shift;
     data->dif_order_page_size = 1 << data->dif_order_page_shift;
@@ -126,6 +151,14 @@ int read_shell_config(struct bus_driver_data *data) {
         dbg_info("set network ip %08x, mac %012llx\n", data->net_ip_addr, data->net_mac_addr);
     }
 
+    return ret_val;
+
+err_ltlb:
+    kfree(data->ltlb_meta);
+    data->ltlb_meta = NULL;
+err_stlb:
+    kfree(data->stlb_meta);
+    data->stlb_meta = NULL;
     return ret_val;
 }
 
