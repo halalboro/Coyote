@@ -455,6 +455,7 @@ module static_top (
         
         // PR & WB channel statistics
         .s_hdma_stats(hdma_stats_stat),
+        .s_hdma_err(32'b0),
 
         // AXI4-Lite input
         .s_axi_ctrl(axi_cnfg_int)

@@ -536,6 +536,7 @@ struct cyt_stat_cnfg_regs {
     uint32_t reconfig_dcpl_clr; 
     uint32_t hdma_debug[N_PR_WB_STAT_REGS];
     uint32_t qdma_pfch_tag;
+    uint32_t hdma_err;
 } __packed;
 
 /**

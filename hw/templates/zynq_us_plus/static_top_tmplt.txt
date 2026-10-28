@@ -100,7 +100,8 @@ module static_top (
 
     // Host DMA, towards the PS
     AXI4 axi_hdma_int [N_HCHAN] ();
-    logic [1:0] hdma_err [N_HCHAN];
+    logic [7:0] hdma_err [N_HCHAN];
+    logic [31:0] hdma_err_flat;
 
     // Decoupling
     logic pr_slct;
@@ -280,6 +281,14 @@ module static_top (
         );
     end
 
+    // Error flags of the first four channels, 8 bits each, readable in the static layer (HDMA_ERR_REG)
+    always_comb begin
+        hdma_err_flat = 0;
+        for (int i = 0; i < N_HCHAN && i < 4; i++) begin
+            hdma_err_flat[i*8+:8] = hdma_err[i];
+        end
+    end
+
     // ================-----------------------------------------------------------------
     // STATIC CONFIG
     // ================-----------------------------------------------------------------
@@ -292,6 +301,7 @@ module static_top (
         .eos_time(eos_time),
         .pr_irq(usr_irq[15]),
         .s_hdma_stats(hdma_stats_stat),
+        .s_hdma_err(hdma_err_flat),
         .s_axi_ctrl(axi_cnfg_int),
         .decouple(decouple_sw)
     );

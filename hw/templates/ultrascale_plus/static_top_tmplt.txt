@@ -276,6 +276,7 @@ module static_top (
         .eos_time(eos_time),
         .pr_irq(usr_irq[15]),
         .s_hdma_stats(hdma_stats_stat),
+        .s_hdma_err(32'b0),
         .s_axi_ctrl(axi_cnfg_int),
         .decouple(decouple_sw)
     );

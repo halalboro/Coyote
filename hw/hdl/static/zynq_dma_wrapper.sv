@@ -35,7 +35,8 @@ import lynxTypes::*;
  * from the shell are turned into AXI DataMover commands, which read/write host (PS DDR) memory through
  * the PS slave ports. The behaviour seen by the shell matches the XDMA bypass:
  *  - H2C (reads):  the stream carries tlast only at the end of a request with last = 1 (XDMA EOP bit)
- *  - C2H (writes): the request length determines the transfer; the tlast of the incoming stream is ignored
+ *  - C2H (writes): the request length determines the transfer; the tlast of the incoming stream is ignored, and
+ *                  bytes of the last beat beyond the request length are dropped (the DataMover halts on extra bytes)
  *  - rsp.done pulses once for every completed request with last = 1 (XDMA completion bit)
  *
  * Every S2MM command is issued with EOF set and its tlast regenerated from the request length,
@@ -63,8 +64,8 @@ module zynq_dma_wrapper #(
     // To the PS (coherent port)
     AXI4.m                      m_axi,
 
-    // Sticky error flags: [0] read (MM2S), [1] write (S2MM)
-    output logic [1:0]          dma_err
+    // Sticky error flags, read (MM2S) in [3:0] and write (S2MM) in [7:4]: [0] error, [1] interr, [2] decerr, [3] slverr
+    output logic [7:0]          dma_err
 );
 
 // DataMover command: [103:100] reserved, [99:96] tag, [95:32] address, [31] drr, [30] eof, [29:24] dsa, [23] type, [22:0] btt
@@ -126,18 +127,23 @@ logic wr_q_rdy_snk;
 logic wr_q_val_src;
 logic wr_q_data_src;
 
-// Outstanding requests, holding the number of beats; used to regenerate tlast
+// Outstanding requests, holding the number of beats (used to regenerate tlast) and the number of bytes
+// in the last beat, if partial (used to trim tkeep; 0 means a full beat)
 logic [BLEN_BITS:0] wr_beats;
+logic [BEAT_LOG_BITS-1:0] wr_last_bytes;
 logic beats_q_rdy_snk;
 logic beats_q_val_src;
-logic [BLEN_BITS:0] beats_q_data_src;
+logic [BLEN_BITS:0] beats_q_beats;
+logic [BEAT_LOG_BITS-1:0] beats_q_last_bytes;
 logic [BLEN_BITS:0] beat_cnt;
 
 logic s2mm_tvalid;
 logic s2mm_tready;
 logic s2mm_tlast;
+logic [AXI_DATA_BITS/8-1:0] s2mm_tkeep;
 
 assign wr_beats = (s_dma_wr.req.len == 0) ? 1 : (s_dma_wr.req.len + (AXI_DATA_BITS/8) - 1) >> BEAT_LOG_BITS;
+assign wr_last_bytes = s_dma_wr.req.len[BEAT_LOG_BITS-1:0];
 
 assign s2mm_cmd_data = {8'h0, {(64-PADDR_BITS){1'b0}}, s_dma_wr.req.paddr, 1'b1, 1'b1, 6'h0, 1'b1, s_dma_wr.req.len[BTT_BITS-1:0]};
 assign s2mm_cmd_valid = s_dma_wr.valid & wr_q_rdy_snk & beats_q_rdy_snk;
@@ -158,23 +164,25 @@ zynq_dma_queue #(
 );
 
 zynq_dma_queue #(
-    .DATA_BITS(BLEN_BITS+1),
+    .DATA_BITS(BLEN_BITS+1+BEAT_LOG_BITS),
     .DEPTH(N_OUTSTANDING_CMD)
 ) inst_beats_q (
     .aclk(aclk),
     .aresetn(aresetn),
     .val_snk(s_dma_wr.valid & s_dma_wr.ready),
     .rdy_snk(beats_q_rdy_snk),
-    .data_snk(wr_beats),
+    .data_snk({wr_last_bytes, wr_beats}),
     .val_src(beats_q_val_src),
     .rdy_src(s2mm_tvalid & s2mm_tready & s2mm_tlast),
-    .data_src(beats_q_data_src)
+    .data_src({beats_q_last_bytes, beats_q_beats})
 );
 
 // Data is only let through once the corresponding request has been accepted
 assign s2mm_tvalid = s_axis_c2h.tvalid & beats_q_val_src;
 assign s_axis_c2h.tready = s2mm_tready & beats_q_val_src;
-assign s2mm_tlast = (beat_cnt == beats_q_data_src - 1);
+assign s2mm_tlast = (beat_cnt == beats_q_beats - 1);
+assign s2mm_tkeep = (s2mm_tlast && beats_q_last_bytes != 0) ?
+    s_axis_c2h.tkeep & ({(AXI_DATA_BITS/8){1'b1}} >> ((AXI_DATA_BITS/8) - beats_q_last_bytes)) : s_axis_c2h.tkeep;
 
 always_ff @(posedge aclk) begin
     if (aresetn == 1'b0) begin
@@ -194,14 +202,14 @@ always_ff @(posedge aclk) begin
     if (aresetn == 1'b0) begin
         s_dma_rd.rsp.done <= 1'b0;
         s_dma_wr.rsp.done <= 1'b0;
-        dma_err <= 2'b00;
+        dma_err <= 8'h00;
     end
     else begin
         s_dma_rd.rsp.done <= mm2s_sts_valid & rd_q_data_src;
         s_dma_wr.rsp.done <= s2mm_sts_valid & wr_q_data_src;
 
-        if (mm2s_sts_valid & ~mm2s_sts_data[STS_OKAY]) dma_err[0] <= 1'b1;
-        if (s2mm_sts_valid & ~s2mm_sts_data[STS_OKAY]) dma_err[1] <= 1'b1;
+        if (mm2s_sts_valid & ~mm2s_sts_data[STS_OKAY]) dma_err[3:0] <= dma_err[3:0] | {mm2s_sts_data[6:4], 1'b1};
+        if (s2mm_sts_valid & ~s2mm_sts_data[STS_OKAY]) dma_err[7:4] <= dma_err[7:4] | {s2mm_sts_data[6:4], 1'b1};
     end
 end
 
@@ -288,7 +296,7 @@ axi_datamover_hdma inst_datamover (
     .m_axi_s2mm_bvalid(m_axi.bvalid),
     .m_axi_s2mm_bready(m_axi.bready),
     .s_axis_s2mm_tdata(s_axis_c2h.tdata),
-    .s_axis_s2mm_tkeep(s_axis_c2h.tkeep),
+    .s_axis_s2mm_tkeep(s2mm_tkeep),
     .s_axis_s2mm_tlast(s2mm_tlast),
     .s_axis_s2mm_tvalid(s2mm_tvalid),
     .s_axis_s2mm_tready(s2mm_tready)

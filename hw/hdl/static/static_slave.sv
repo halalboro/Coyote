@@ -58,6 +58,9 @@ module static_slave (
   // Host DMA statistics 
   input  hdma_stat_t              s_hdma_stats,
 
+  // Sticky host DMA error flags, 8 bits per channel; only driven on Zynq platforms (tied to 0 elsewhere)
+  input  logic [31:0]             s_hdma_err,
+
   // When set, applies decoupling to the shell interfaces (i.e. all valid signals are deasserted)
   output logic                    decouple,
 
@@ -138,6 +141,8 @@ localparam integer HDMA_STAT_AXIS_RD  = 15;
 localparam integer HDMA_STAT_AXIS_WR  = 16;
 // 17 (RW): QDMA prefetch tag 
 localparam integer QDMA_PFCH_TAG_REG  = 17;
+// 18 (RO): Host DMA error flags (Zynq only); per channel, read in [3:0] and write in [7:4]: [0] error, [1] interr, [2] decerr, [3] slverr
+localparam integer HDMA_ERR_REG       = 18;
 
 // ---------------------------------------------------------------------------------------- 
 // Write process 
@@ -275,6 +280,8 @@ always_ff @(posedge aclk) begin
 
         QDMA_PFCH_TAG_REG:
           axi_rdata <= slv_reg[QDMA_PFCH_TAG_REG];            
+        HDMA_ERR_REG:
+          axi_rdata <= s_hdma_err;
 
         default: ;
       endcase

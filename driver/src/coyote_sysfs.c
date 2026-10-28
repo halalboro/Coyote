@@ -188,6 +188,11 @@ ssize_t cyt_attr_prstats_show(struct kobject *kobj, struct kobj_attribute *attr,
         (bus_data->stat_cnfg->hdma_debug[5])
     );
 
+    #ifdef PLATFORM_ZYNQ
+    // Per host DMA channel: read (MM2S) in [3:0], write (S2MM) in [7:4]; [0] error, [1] interr, [2] decerr, [3] slverr
+    sw += sprintf(buff + strlen(buff), "\nhost DMA error flags: %08x\n\n", bus_data->stat_cnfg->hdma_err);
+    #endif
+
     #ifdef PLATFORM_VERSAL
     sw += sprintf(
         buff + strlen(buff), 
