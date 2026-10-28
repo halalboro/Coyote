@@ -630,10 +630,10 @@ always_ff @(posedge aclk) begin
               slv_reg[WBACK_LCL_RD_OFFS_REG][(i*8)+:8] <= s_axi_ctrl.wdata[(i*8)+:8];
             end
           end
-        WBACK_LCL_WR_OFFS_REG: // Writeback read
+        WBACK_LCL_WR_OFFS_REG: // Writeback write
           for (int i = 0; i <  AXIL_DATA_BITS/8; i++) begin
             if(s_axi_ctrl.wstrb[i]) begin
-              slv_reg[WBACK_LCL_RD_OFFS_REG][(i*8)+:8] <= s_axi_ctrl.wdata[(i*8)+:8];
+              slv_reg[WBACK_LCL_WR_OFFS_REG][(i*8)+:8] <= s_axi_ctrl.wdata[(i*8)+:8];
             end
           end
         WBACK_RMT_RD_OFFS_REG: // Writeback read
