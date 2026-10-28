@@ -1,9 +1,11 @@
 // Device tree overlay for Coyote on the ZCU216 (experimental)
 //
-// Loads the bitstream (fragment@0) and adds the Coyote platform device (fragment@1), matched by
-// the Coyote driver built with TARGET_PLATFORM=zynq; see driver/src/platform/zynq_plat.c
+// Loads the bitstream (fragment@0), adds the Coyote platform device (fragment@1), matched by
+// the Coyote driver built with TARGET_PLATFORM=zynq (see driver/src/platform/zynq_plat.c),
+// and disables PYNQ's generic-uio fabric device, which holds the first PL interrupt (fragment@2)
 //
-// Build and apply (as root), with cyt_top.bin copied to /lib/firmware:
+// Build and apply (as root), with cyt_top.bin byte-swapped for the FPGA manager and copied to /lib/firmware:
+//   echo 'all: { cyt_top.bit }' > cyt_top.bif && bootgen -arch zynqmp -process_bitstream bin -image cyt_top.bif
 //   dtc -@ -I dts -O dtb -o coyote_zcu216.dtbo coyote_zcu216.dtso
 //   mkdir /sys/kernel/config/device-tree/overlays/coyote
 //   cat coyote_zcu216.dtbo > /sys/kernel/config/device-tree/overlays/coyote/dtbo
@@ -19,23 +21,25 @@
     fragment@0 {
         target = <&fpga_full>;
         __overlay__ {
+            // Must be in the byte-swapped format expected by the ZynqMP FPGA manager (bootgen -process_bitstream bin)
             firmware-name = "cyt_top.bin";
 
-            // pl_clk0 (PL0_REF) must be 100 MHz; all static layer clocks are generated from it
-            clocking0: clocking0 {
-                compatible = "xlnx,fclk";
-                #clock-cells = <0>;
-                clocks = <&zynqmp_clk 71>;
-                assigned-clocks = <&zynqmp_clk 71>;
-                assigned-clock-rates = <100000000>;
-                clock-output-names = "fabric_clk";
-            };
+            // pl_clk0 (PL0_REF) must be 100 MHz; all static layer clocks are generated from it.
+            // It is not set here: an xlnx,fclk node needs CONFIG_XILINX_FCLK, which e.g. the PYNQ 2.7 kernel lacks,
+            // so check /sys/kernel/debug/clk/pl0_ref/clk_rate before loading the driver
         };
     };
 
     fragment@1 {
         target = <&amba>;
         __overlay__ {
+            // PS-PL port widths are not part of the bitstream: set S_AXI_HPC0/1 (AFI_FM0/1 read and write) and
+            // M_AXI_HPM0/1 (FPD afi_fs) to 128 bits, matching hw/bd/zynq_us_plus/cr_ps.tcl; uses the xlnx,afi-fpga driver
+            afi0: afi0 {
+                compatible = "xlnx,afi-fpga";
+                config-afi = <0 0>, <1 0>, <2 0>, <3 0>, <14 0xa00>;
+            };
+
             coyote@a0000000 {
                 compatible = "ethz,coyote-zynqmp";
 
@@ -52,9 +56,21 @@
                              <0 104 4>, <0 105 4>, <0 106 4>, <0 107 4>,
                              <0 108 4>, <0 109 4>, <0 110 4>, <0 111 4>;
 
-                // Host memory is accessed through the coherent HPC ports; required, since Coyote never syncs caches explicitly
+                // Host memory is accessed through the HPC ports; these are only IO-coherent if the boot image sets
+                // brdc_inner in LPD_SLCR lpd_apu (0xFF41A040) while the APU is in reset (Xilinx AR# 69446), e.g. with
+                // the register init entry .set. 0xFF41A040 = 0x3 in the BIF. The stock PYNQ 2.7 image doesn't; on such
+                // images, remove dma-coherent, and the Coyote library cleans and invalidates CPU caches instead
                 dma-coherent;
             };
+        };
+    };
+
+    // PYNQ's base device tree binds a generic-uio device to the first PL interrupt (SPI 89), which vFPGA 0 needs;
+    // disable it while the overlay is applied (removing the overlay restores it). Drop this fragment on other images
+    fragment@2 {
+        target-path = "/amba/fabric@A0000000";
+        __overlay__ {
+            status = "disabled";
         };
     };
 };

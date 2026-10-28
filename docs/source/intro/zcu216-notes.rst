@@ -10,7 +10,7 @@ the host is the on-chip ARM processing system (PS). Since the programmable logic
 (including the MMU, vFPGAs and user logic) are shared with the Alveo cards; only the static layer, the driver platform layer
 and a few build options differ.
 
-.. warning:: Support for the ZCU216 is experimental and has not yet been validated on hardware. Currently, only host streams are supported.
+.. warning:: Support for the ZCU216 is experimental. It has been validated on hardware (PYNQ 2.7, Linux 5.4) with Examples 2, 3, 4, 7 and 8. Currently, only host streams are supported.
 
 Architecture
 ------------------------------------------
@@ -26,9 +26,12 @@ MSI-X vectors                                     ``pl_ps_irq0/1`` (GIC SPIs 89-
 PCIe reference clock                              ``pl_clk0`` (100 MHz) and a clocking wizard
 ================================================= =============================================================
 
-.. note:: The Coyote driver maps user buffers once and never syncs caches explicitly. Host memory is therefore accessed through
-    the coherent (HPC) ports, with snoopable AXI cache attributes, and the device must be marked ``dma-coherent`` in the device tree.
-    See AR# 69446 for the PS-side requirements of HPC port coherency.
+.. note:: Host memory is accessed through the coherent (HPC) ports, with snoopable AXI cache attributes. These are only coherent
+    if the boot image sets ``brdc_inner`` in ``LPD_SLCR.lpd_apu`` (``0xFF41A040``) while the APU is in reset (AR# 69446),
+    for example with the register init entry ``.set. 0xFF41A040 = 0x3;`` in the BIF. Then the device is marked ``dma-coherent``
+    in the device tree, as in ``driver/dts/coyote_zcu216.dtso``. Boot images without it (such as the stock PYNQ 2.7 image) must drop
+    ``dma-coherent``; the Coyote library then cleans and invalidates CPU caches around ``invoke()``, and FPGA-initiated transfers
+    need ``cThread::syncForDevice()`` and ``cThread::syncForCpu()``.
 
 Building the hardware
 ------------------------------------------
@@ -41,7 +44,8 @@ For example, for Example 7:
     cmake ../ -DFDEV_NAME=zcu216 -DBUILD_STATIC=1 -DBUILD_SHELL=0 -DEN_SHELL_PBLOCK=0
     make project && make bitgen
 
-The build produces ``bitstreams/cyt_top.bin``, which can be loaded from Linux.
+The build produces ``bitstreams/cyt_top.bin``, which can be loaded from Linux. It is converted with ``bootgen`` to the byte-swapped
+format expected by the ZynqMP FPGA manager.
 
 Building and loading the driver
 ------------------------------------------
@@ -52,7 +56,11 @@ The driver is built for the ARM host, against the kernel running on the board:
     cd driver && make TARGET_PLATFORM=zynq
 
 The bitstream is loaded and the Coyote device is described to the kernel with a device tree overlay (``driver/dts/coyote_zcu216.dtso``),
-which must match the addresses and interrupts of the static layer. Hugepages (2 MB) must be reserved as on other platforms.
+which must match the addresses and interrupts of the static layer. The overlay also sets the PS-PL port widths to 128 bits
+(these reset on reboot and are not part of the bitstream) and, on PYNQ images, disables the generic-uio device that holds the
+first PL interrupt. The PL clock (``pl0_ref``) cannot be set from the overlay on kernels without ``CONFIG_XILINX_FCLK``;
+check that ``/sys/kernel/debug/clk/pl0_ref/clk_rate`` reads 100 MHz before loading the driver. Hugepages (2 MB) must be reserved
+as on other platforms.
 
 .. code-block:: bash
 
@@ -71,13 +79,13 @@ Supported features
 Example                      Status
 ============================ ==============================================
 1 Hello World                ❌ (card memory)
-2 HLS Vector Add             Untested
-3 Multi-tenancy              Untested
-4 User interrupts            Untested
+2 HLS Vector Add             ✅
+3 Multi-tenancy              ✅ (4 vFPGAs)
+4 User interrupts            ✅
 5 Shell reconfiguration      ❌
 6 GPU P2P                    ❌
-7 FPGA-initiated DMA         Untested
-8 Multi-threading            Untested
+7 FPGA-initiated DMA         ✅
+8 Multi-threading            ✅
 9 RDMA                       ❌
 10 vFPGA reconfiguration     ❌
 11 Traffic sniffer           ❌
