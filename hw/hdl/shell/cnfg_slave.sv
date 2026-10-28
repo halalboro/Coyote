@@ -1446,7 +1446,7 @@ queue_meta #(.QDEPTH(8)) inst_meta_wback_rdma_wr (.aclk(aclk), .aresetn(aresetn)
 `endif
 
 // RR
-meta_arbiter #(.N_ID(N_WBS), .N_ID_BITS(N_WBS_BITS), .DATA_BITS(PID_BITS)) inst_wb_arb (
+meta_arbiter #(.N_ID(N_WBS), .N_ID_BITS(N_WBS_BITS), .DATA_BITS($bits(wback_t))) inst_wb_arb (
     .aclk(aclk),
     .aresetn(aresetn),
     .s_meta(wback_q),
