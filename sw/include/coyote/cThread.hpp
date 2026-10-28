@@ -28,6 +28,8 @@
 #define _COYOTE_CTHREAD_HPP_
 
 #include <thread>
+#include <vector>
+#include <utility>
 #include <functional>
 #include <unordered_map>
 
@@ -135,6 +137,24 @@ protected:
 
 	/// Set to true if the vFPGA lock is acquired by this cThread; used to release the lock in the destructor
 	bool lock_acquired = { false };
+
+	/**
+	 * Set to true if the driver reports that host DMA is not cache-coherent (e.g., on Zynq without HPC port coherency);
+	 * buffers of local operations are then cleaned and invalidated in the CPU caches, see syncForDevice() and syncForCpu()
+	 */
+	bool needs_cache_sync = { false };
+
+	/// Destination buffers of local writes, invalidated again in checkCompleted() once the writes complete
+	mutable std::vector<std::pair<const void*, uint64_t>> pending_cpu_sync;
+
+	/// Number of local writes (with last set) issued since the last clearCompleted(); used to drop pending_cpu_sync entries
+	uint32_t posted_writes = { 0 };
+
+	/// Number of completed local writes last seen in checkCompleted()
+	mutable uint32_t seen_writes = { 0 };
+
+	/// Utility function, preparing the buffers of a local operation for DMA on platforms without cache-coherent DMA
+	void syncLocalOp(const void *src, uint64_t src_len, const void *dst, uint64_t dst_len, bool last);
 	
 	#ifdef EN_AVX
 	/// Typed accessor for cnfg_reg_avx (stored as an opaque pointer so EN_AVX does not affect the layout of cThread)
@@ -336,6 +356,23 @@ protected:
 	 * @brief Clears all the completion counters (for all operations)
 	 */
 	void clearCompleted();
+
+	/**
+	 * @brief Makes CPU writes to a buffer visible to the vFPGA and drops any cached copies of it
+	 *
+	 * Call before the vFPGA reads or writes the buffer. Only has an effect on platforms where host DMA is not
+	 * cache-coherent (e.g., Zynq without HPC port coherency); a no-op otherwise.
+	 * @note invoke() already does this for local operations; only needed for transfers initiated by the vFPGA itself
+	 */
+	void syncForDevice(const void *addr, uint64_t len) const;
+
+	/**
+	 * @brief Makes vFPGA writes to a buffer visible to the CPU
+	 *
+	 * Call after the vFPGA has finished writing the buffer; same conditions as syncForDevice().
+	 * @note checkCompleted() already does this for local writes started with invoke()
+	 */
+	void syncForCpu(const void *addr, uint64_t len) const;
 
 	/** 
 	 * @brief Synchronizes the connection between the client and server

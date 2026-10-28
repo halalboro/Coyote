@@ -370,6 +370,49 @@ void cThread::munmapFpga() {
 	wback = 0;
 }
 
+// Cleans and invalidates [addr, addr + len) in the CPU caches, up to the point of coherency;
+// only implemented on aarch64 (on x86, Coyote platforms always provide cache-coherent DMA)
+static void cleanInvalidateCache(const void *addr, uint64_t len) {
+#if defined(__aarch64__)
+    uint64_t ctr;
+    asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    uint64_t line = 4UL << ((ctr >> 16) & 0xf);
+    uint64_t end = reinterpret_cast<uint64_t>(addr) + len;
+    for (uint64_t a = reinterpret_cast<uint64_t>(addr) & ~(line - 1); a < end; a += line) {
+        asm volatile("dc civac, %0" :: "r"(a) : "memory");
+    }
+    asm volatile("dsb sy" ::: "memory");
+#else
+    (void) addr;
+    (void) len;
+#endif
+}
+
+void cThread::syncForDevice(const void *addr, uint64_t len) const {
+    if (needs_cache_sync) { cleanInvalidateCache(addr, len); }
+}
+
+void cThread::syncForCpu(const void *addr, uint64_t len) const {
+    if (needs_cache_sync) { cleanInvalidateCache(addr, len); }
+}
+
+void cThread::syncLocalOp(const void *src, uint64_t src_len, const void *dst, uint64_t dst_len, bool last) {
+    if (!needs_cache_sync) { return; }
+
+    // Source: write back dirty lines, so that the vFPGA reads the latest data
+    if (src) { syncForDevice(src, src_len); }
+
+    // Destination: drop lines now, so that no dirty line is evicted on top of the data written by the vFPGA;
+    // lines (speculatively) fetched during the transfer are dropped again on completion, in checkCompleted()
+    if (dst) {
+        syncForDevice(dst, dst_len);
+        bool found = false;
+        for (auto &e : pending_cpu_sync) { found |= e.first == dst && e.second == dst_len; }
+        if (!found) { pending_cpu_sync.emplace_back(dst, dst_len); }
+        if (last) { posted_writes++; }
+    }
+}
+
 void cThread::userMap(void *vaddr, uint64_t len, int32_t mem_block) {
     DBG1("cThread: Called userMap to map user buffer, vaddr " << vaddr << ", length " << len << ", memory block " << mem_block << " and ctid " << ctid);
 
@@ -447,7 +490,15 @@ void cThread::userMap(void *vaddr, uint64_t len, int32_t mem_block) {
         if (ret_val != BUFF_NEEDS_EXP_SYNC_RET_CODE) {
             throw std::runtime_error("ERROR: IOCTL_MAP_USER_MEM failed");
         } else {
+            #if defined(__aarch64__)
+            if (!needs_cache_sync) {
+                std::cerr << "WARNING: host DMA is not cache-coherent on this platform; Coyote cleans and invalidates CPU caches around local operations, "
+                          << "but transfers initiated by the vFPGA itself need cThread::syncForDevice() and cThread::syncForCpu()" << std::endl;
+            }
+            needs_cache_sync = true;
+            #else
             std::cerr << "WARNING: userMap detected that the mapped buffer may need explicit synchronization due to caching effects; see dmesg for more details" << std::endl;
+            #endif
         }
     }
 }
@@ -843,6 +894,7 @@ void cThread::invoke(CoyoteOper oper, localSg sg, bool last) {
         
         uint64_t addr_cmd_src = reinterpret_cast<uint64_t>(sg.addr);
 
+        syncLocalOp(sg.addr, sg.len, nullptr, 0, last);
         postCmd(0, 0, addr_cmd_src, ctrl_cmd_src);
 
     } else if (oper == CoyoteOper::LOCAL_WRITE) {
@@ -857,6 +909,7 @@ void cThread::invoke(CoyoteOper oper, localSg sg, bool last) {
 
         uint64_t addr_cmd_dst = reinterpret_cast<uint64_t>(sg.addr);
 
+        syncLocalOp(nullptr, 0, sg.addr, sg.len, last);
         postCmd(addr_cmd_dst, ctrl_cmd_dst, 0, 0);
 
     } else {
@@ -908,6 +961,7 @@ void cThread::invoke(CoyoteOper oper, localSg src_sg, localSg dst_sg, bool last)
         uint64_t addr_cmd_src = reinterpret_cast<uint64_t>(src_sg.addr);
         uint64_t addr_cmd_dst = reinterpret_cast<uint64_t>(dst_sg.addr);
 
+        syncLocalOp(src_sg.addr, src_sg.len, dst_sg.addr, dst_sg.len, last);
         postCmd(addr_cmd_dst, ctrl_cmd_dst, addr_cmd_src, ctrl_cmd_src);
 
     } else {
@@ -1019,16 +1073,25 @@ uint32_t cThread::checkCompleted(CoyoteOper coper) const {
      * for writes first, then reads, and finally remote operations.
      */
 	if (isLocalWrite(coper)) {
+        uint32_t completed;
 		if (fcnfg.en_wb) {
-            return wback[ctid + WR_WBACK * N_CTID_MAX];
+            completed = wback[ctid + WR_WBACK * N_CTID_MAX];
 		} else {
             #ifdef EN_AVX
 			if (fcnfg.en_avx) 
-				return _mm256_extract_epi32(avxRegs()[static_cast<uint32_t>(CnfgAvxRegs::STAT_DMA_REG) + ctid], 1);
+				completed = _mm256_extract_epi32(avxRegs()[static_cast<uint32_t>(CnfgAvxRegs::STAT_DMA_REG) + ctid], 1);
 			else
             #endif
-				return (HIGH_32(cnfg_reg[static_cast<uint32_t>(CnfgLegRegs::STAT_DMA_REG) + ctid]));
+				completed = (HIGH_32(cnfg_reg[static_cast<uint32_t>(CnfgLegRegs::STAT_DMA_REG) + ctid]));
 		}
+
+        // Without cache-coherent DMA, drop any lines of the written buffers fetched while the writes were in flight
+        if (needs_cache_sync && completed != seen_writes) {
+            seen_writes = completed;
+            for (auto &e : pending_cpu_sync) { syncForCpu(e.first, e.second); }
+            if (completed >= posted_writes) { pending_cpu_sync.clear(); }
+        }
+        return completed;
 	} else if (isLocalRead(coper)) {
 		if (fcnfg.en_wb) {
 			return wback[ctid + RD_WBACK * N_CTID_MAX];
@@ -1068,8 +1131,12 @@ uint32_t cThread::checkCompleted(CoyoteOper coper) const {
 }
 
 void cThread::clearCompleted() {
-    DBG1("cThread: Called clearCompleted"); 
-    
+    DBG1("cThread: Called clearCompleted");
+
+    pending_cpu_sync.clear();
+    posted_writes = 0;
+    seen_writes = 0;
+
     if (fcnfg.en_wb) {
         for (int i = 0; i < N_WBACKS; i++) {
             wback[ctid + i * N_CTID_MAX] = 0;

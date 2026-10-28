@@ -569,8 +569,13 @@ uint32_t cThread::checkCompleted(CoyoteOper oper) const {
     return result;
 }
 
+// In simulation, host memory is always coherent with the (simulated) vFPGA
+void cThread::syncForDevice(const void *addr, uint64_t len) const {}
+
+void cThread::syncForCpu(const void *addr, uint64_t len) const {}
+
 void cThread::clearCompleted() {
-    additional_state->executeUnlessCrash([&] { 
+    additional_state->executeUnlessCrash([&] {
         additional_state->input_writer.clearCompleted();
     });
     DEBUG("clearCompleted() finished")
