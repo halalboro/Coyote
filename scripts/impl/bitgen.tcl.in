@@ -49,8 +49,14 @@ if {$cfg(en_pr) eq 0} {
         # Coyote top; including the shell and the static layer
         if {$cfg(fpga_arch) eq "ultrascale_plus"} {
             if {$cfg(host_if) eq "zynq"} {
-                # On Zynq-based platforms, the bitstream is loaded from Linux (FPGA manager), which expects the .bin format
-                write_bitstream -force -no_partial_bitfile -bin_file "$bit_dir/cyt_top.bit"
+                # On Zynq-based platforms, the bitstream is loaded from Linux (FPGA manager), which expects the .bin format,
+                # with each 32-bit word byte-swapped; write_bitstream -bin_file doesn't swap, so bootgen produces the .bin
+                write_bitstream -force -no_partial_bitfile "$bit_dir/cyt_top.bit"
+                set bif_file [open "$bit_dir/cyt_top.bif" w]
+                puts $bif_file "all: { [file normalize $bit_dir/cyt_top.bit] }"
+                close $bif_file
+                exec bootgen -arch zynqmp -process_bitstream bin -image "$bit_dir/cyt_top.bif" -w on
+                file rename -force "$bit_dir/cyt_top.bit.bin" "$bit_dir/cyt_top.bin"
             } else {
                 write_bitstream -force -no_partial_bitfile "$bit_dir/cyt_top.bit"
             }

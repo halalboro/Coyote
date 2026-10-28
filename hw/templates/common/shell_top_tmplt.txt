@@ -444,8 +444,10 @@ module shell_top (
 
         .axi_main(s_axi_main),
         .axi_cnfg(axi_cnfg),
-        .axi_ctrl(axi_ctrl),
-        .axim_ctrl(axim_ctrl) 
+        .axi_ctrl(axi_ctrl){% if cnfg.en_avx %},
+        .axim_ctrl(axim_ctrl)
+        {% endif %}
+
     );
 
 {% if cnfg.fdev == 'u55c' %}

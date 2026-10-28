@@ -217,6 +217,13 @@ set cmd "set_property -dict \[list \
   ] \[get_bd_cells clk_wiz_0]"
 eval $cmd
 
+# On Zynq-based platforms, xclk is already a global clock from the static layer (PS pl_clk0 -> clocking wizard)
+# Without a buffer, the IP's create_clock on clk_in1 is out-of-context only; otherwise, it is carried in the shell
+# checkpoint and, once linked with the static layer, overrides the propagated xclk (losing its clock insertion delay)
+if {$cnfg(host_if) eq "zynq"} {
+  set_property CONFIG.PRIM_SOURCE {No_buffer} [get_bd_cells clk_wiz_0]
+}
+
 # Reset sync
 create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_a
 create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_n

@@ -173,7 +173,6 @@ module static_top (
         .axi_main_araddr(lsb_araddr),
         .axi_main_arburst(axi_main_int.arburst),
         .axi_main_arcache(axi_main_int.arcache),
-        .axi_main_arid(axi_main_int.arid),
         .axi_main_arlen(axi_main_int.arlen),
         .axi_main_arlock(axi_main_int.arlock),
         .axi_main_arprot(axi_main_int.arprot),
@@ -183,7 +182,6 @@ module static_top (
         .axi_main_awaddr(lsb_awaddr),
         .axi_main_awburst(axi_main_int.awburst),
         .axi_main_awcache(axi_main_int.awcache),
-        .axi_main_awid(axi_main_int.awid),
         .axi_main_awlen(axi_main_int.awlen),
         .axi_main_awlock(axi_main_int.awlock),
         .axi_main_awprot(axi_main_int.awprot),
@@ -192,10 +190,8 @@ module static_top (
         .axi_main_awvalid(axi_main_int.awvalid),
         .axi_main_bready(axi_main_int.bready),
         .axi_main_bresp(axi_main_int.bresp),
-        .axi_main_bid(axi_main_int.bid),
         .axi_main_bvalid(axi_main_int.bvalid),
         .axi_main_rdata(axi_main_int.rdata),
-        .axi_main_rid(axi_main_int.rid),
         .axi_main_rlast(axi_main_int.rlast),
         .axi_main_rready(axi_main_int.rready),
         .axi_main_rresp(axi_main_int.rresp),
@@ -214,6 +210,7 @@ module static_top (
         .axi_hdma_{{ i }}_arlen(axi_hdma_int[{{ i }}].arlen),
         .axi_hdma_{{ i }}_arlock(axi_hdma_int[{{ i }}].arlock),
         .axi_hdma_{{ i }}_arprot(axi_hdma_int[{{ i }}].arprot),
+        .axi_hdma_{{ i }}_arqos(axi_hdma_int[{{ i }}].arqos),
         .axi_hdma_{{ i }}_arready(axi_hdma_int[{{ i }}].arready),
         .axi_hdma_{{ i }}_arsize(axi_hdma_int[{{ i }}].arsize),
         .axi_hdma_{{ i }}_arvalid(axi_hdma_int[{{ i }}].arvalid),
@@ -224,6 +221,7 @@ module static_top (
         .axi_hdma_{{ i }}_awlen(axi_hdma_int[{{ i }}].awlen),
         .axi_hdma_{{ i }}_awlock(axi_hdma_int[{{ i }}].awlock),
         .axi_hdma_{{ i }}_awprot(axi_hdma_int[{{ i }}].awprot),
+        .axi_hdma_{{ i }}_awqos(axi_hdma_int[{{ i }}].awqos),
         .axi_hdma_{{ i }}_awready(axi_hdma_int[{{ i }}].awready),
         .axi_hdma_{{ i }}_awsize(axi_hdma_int[{{ i }}].awsize),
         .axi_hdma_{{ i }}_awvalid(axi_hdma_int[{{ i }}].awvalid),
@@ -261,6 +259,10 @@ module static_top (
     assign axi_main_int.araddr[AXI_ADDR_BITS-1:AXI_BPSS_BAR_BITS] = 0;
     assign axi_main_int.awaddr[AXI_BPSS_BAR_BITS-1:0] = lsb_awaddr[AXI_BPSS_BAR_BITS-1:0];
     assign axi_main_int.awaddr[AXI_ADDR_BITS-1:AXI_BPSS_BAR_BITS] = 0;
+
+    // The SmartConnect serializes the PS transactions, so axi_main has no ID signals (see cr_ps.tcl)
+    assign axi_main_int.arid = 0;
+    assign axi_main_int.awid = 0;
 
     // ================-----------------------------------------------------------------
     // HOST DMA

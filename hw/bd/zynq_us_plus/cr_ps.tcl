@@ -128,12 +128,11 @@ proc cr_bd_design_static { parentCell } {
   ] $axi_cnfg
 
   # Control main
-  # The ID width must match AXI_ID_BITS of the shell; the SmartConnect compacts the (16-bit) IDs of the PS
+  # The ID width is propagated from the SmartConnect (read-only here); it must not exceed AXI_ID_BITS of the shell (checked below)
   set cmd "set axi_main \[ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 axi_main ]
           set_property -dict \[ list \
             CONFIG.ADDR_WIDTH {64} \
             CONFIG.DATA_WIDTH {512} \
-            CONFIG.ID_WIDTH {6} \
             CONFIG.HAS_BRESP {1} \
             CONFIG.HAS_BURST {1} \
             CONFIG.HAS_CACHE {1} \
@@ -187,6 +186,8 @@ proc cr_bd_design_static { parentCell } {
   set xresetn [ create_bd_port -dir O -type rst xresetn ]
 
   # Main bd clock
+  # The clock frequencies are not set here, but propagated from the clocking wizard; pl_clk0 is derived from the
+  # 33.333 MHz PS reference clock, so all clocks are slightly below nominal (e.g., xclk is 249.9975 MHz)
   set cmd "set xclk \[ create_bd_port -dir O -type clk xclk ]
           set_property -dict \[ list \
               CONFIG.ASSOCIATED_BUSIF {axi_main:axi_cnfg"
@@ -194,7 +195,6 @@ proc cr_bd_design_static { parentCell } {
                 append cmd ":axi_hdma_$i"
               }
               append cmd "} \
-              CONFIG.FREQ_HZ {250000000} \
               ] \$xclk"
   eval $cmd
 
@@ -205,7 +205,6 @@ proc cr_bd_design_static { parentCell } {
   set cmd "set pclk \[ create_bd_port -dir O -type clk pclk ]
           set_property -dict \[ list \
               CONFIG.ASSOCIATED_RESET {presetn} \
-              CONFIG.FREQ_HZ {200000000} \
           ] \$pclk"
   eval $cmd
 
@@ -216,7 +215,6 @@ proc cr_bd_design_static { parentCell } {
   set cmd "set dclk \[ create_bd_port -dir O -type clk dclk ]
           set_property -dict \[ list \
               CONFIG.ASSOCIATED_RESET {dresetn} \
-              CONFIG.FREQ_HZ {100000000} \
           ] \$dclk"
   eval $cmd
 
@@ -266,9 +264,9 @@ proc cr_bd_design_static { parentCell } {
   ] $zynq_ultra_ps_e_0
 
   # Clocks; xclk (250 MHz), pclk (200 MHz), dclk (100 MHz)
+  # The input frequency is propagated from pl_clk0, which the PS PLLs can only approximate (e.g., 99.999 MHz)
   set clk_wiz_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz clk_wiz_0 ]
   set_property -dict [list \
-    CONFIG.PRIM_IN_FREQ {100.000} \
     CONFIG.PRIM_SOURCE {No_buffer} \
     CONFIG.USE_LOCKED {true} \
     CONFIG.USE_RESET {true} \
@@ -384,10 +382,10 @@ proc cr_bd_design_static { parentCell } {
 
   validate_bd_design
 
-  # A wider ID would be silently truncated in static_top, breaking response routing
+  # The SmartConnect (single master) serializes the PS IDs, so axi_main has no ID signals; static_top ties them to 0
   set main_id_width [get_property CONFIG.ID_WIDTH [get_bd_intf_ports axi_main]]
-  if { $main_id_width > 6 } {
-    error "axi_main has an ID width of $main_id_width, but the shell supports at most 6 (AXI_ID_BITS)"
+  if { $main_id_width != 0 } {
+    error "axi_main has an ID width of $main_id_width, but static_top (zynq_us_plus) expects 0; connect the axi_main ID signals there"
   }
 
   # Restore current instance
