@@ -49,6 +49,7 @@ int main(int argc, char *argv[])  {
 
     // Allocate & initialise data
     int *data = (int *) coyote_thread.getMem({coyote::CoyoteAllocType::REG, DATA_SIZE_BYTES});
+    if (!data) { throw std::runtime_error("Could not allocate memory; exiting..."); }
     for (int i = 0; i < DATA_SIZE_BYTES / sizeof(int); i++) {
         data[i] = i;
     }

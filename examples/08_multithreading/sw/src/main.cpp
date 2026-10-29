@@ -103,13 +103,14 @@ int main(int argc, char *argv[])  {
 
         // Allocate source memory and copy file contents into it
         src_mems.emplace_back((char *) coyote_threads[i]->getMem({coyote::CoyoteAllocType::HPF, size + 1}));
+        if (!src_mems[i]) { throw std::runtime_error("Could not allocate memory; exiting..."); }
         fseek(source_file, 0, SEEK_SET);
         if (!fread(src_mems[i], size, 1, source_file)) { throw std::runtime_error("Could not read source text; exiting..."); }
         
         // Allocate destination memory and set it to zero
         dst_mems.emplace_back((char *) coyote_threads[i]->getMem({coyote::CoyoteAllocType::HPF, size + 1}));
-        memset(dst_mems[i], 0, size + 1);
         if (!dst_mems[i]) { throw std::runtime_error("Could not allocate memory; exiting..."); }
+        memset(dst_mems[i], 0, size + 1);
 
         // Allocate scatter-gather entry for this Coyote thread to do encryption
         // As with Example 1, we will be doing a LOCAL_TRANSFER: CPU MEM => vFPGA (encryption) => CPU MEM
