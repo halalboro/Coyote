@@ -277,10 +277,15 @@ void cThread::postCmd(uint64_t offs_3, uint64_t offs_2, uint64_t offs_1, uint64_
         avxRegs()[static_cast<uint32_t>(CnfgAvxRegs::CTRL_REG)] = _mm256_set_epi64x(offs_3, offs_2, offs_1, offs_0);
     } else {
     #endif
+        // Without AVX, a command takes four register writes, shared by all processes and threads on this vFPGA; if
+        // another command's writes interleave, one command picks up the address of the other (with AVX, it is a single write)
+        bool locked_here = !lock_acquired;
+        if (locked_here) { vlock.lock(); }
         cnfg_reg[static_cast<uint32_t>(CnfgLegRegs::VADDR_WR_REG)] = offs_3;
         cnfg_reg[static_cast<uint32_t>(CnfgLegRegs::CTRL_REG_2)] = offs_2;
         cnfg_reg[static_cast<uint32_t>(CnfgLegRegs::VADDR_RD_REG)] = offs_1;
         cnfg_reg[static_cast<uint32_t>(CnfgLegRegs::CTRL_REG)] = offs_0;
+        if (locked_here) { vlock.unlock(); }
     #ifdef EN_AVX
     }
     #endif
