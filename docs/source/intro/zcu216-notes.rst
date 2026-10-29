@@ -70,7 +70,13 @@ as on other platforms.
     cat coyote_zcu216.dtbo > /sys/kernel/config/device-tree/overlays/coyote/dtbo
     insmod driver/build/coyote_driver.ko
 
-The software library is built as usual on the board; AVX is disabled automatically on ARM.
+The software library is built as usual on the board; AVX is disabled automatically on ARM. The driver logs every
+TLB mapping and interrupt by default; build it with ``make TARGET_PLATFORM=zynq COYOTE_DEBUG=0`` to turn that off.
+
+.. note:: Several processes using the same vFPGA at the same time are not reliable yet: with a single host stream,
+    results can end up in the other process' buffers, and four processes starting at the same moment on separate
+    streams (Example 8) have been seen to stall the vFPGA until it is reloaded. Use one process per vFPGA; several
+    threads within one process (as in Example 8) are fine. Processes on separate vFPGAs are isolated.
 
 Supported features
 ------------------------------------------
