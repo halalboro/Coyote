@@ -851,20 +851,20 @@ always_ff @(posedge aclk) begin
         OFFL_CTRL_REG:
             axi_rdata[31:0] <= offload_queue_used[31:0];
         OFFL_STAT_REG:
-            axi_rdata[0] <= slv_reg[OFFL_STAT_REG][MEM_DONE];
+            axi_rdata[31:0] <= slv_reg[OFFL_STAT_REG][MEM_CNT_OFFS+:32];
         OFFL_HOST_OFFS_REG:
             axi_rdata[PADDR_BITS-1:0] <= slv_reg[OFFL_HOST_OFFS_REG][PADDR_BITS-1:0];
         OFFL_CARD_OFFS_REG:
-            axi_rdata[PADDR_BITS-1:0] <= slv_reg[OFFL_HOST_OFFS_REG][PADDR_BITS-1:0];
+            axi_rdata[PADDR_BITS-1:0] <= slv_reg[OFFL_CARD_OFFS_REG][PADDR_BITS-1:0];
 
         SYNC_CTRL_REG:
             axi_rdata[31:0] <= sync_queue_used[31:0];
         SYNC_STAT_REG:
-            axi_rdata[0] <= slv_reg[SYNC_STAT_REG][MEM_DONE];
+            axi_rdata[31:0] <= slv_reg[SYNC_STAT_REG][MEM_CNT_OFFS+:32];
         SYNC_HOST_OFFS_REG:
             axi_rdata[PADDR_BITS-1:0] <= slv_reg[SYNC_HOST_OFFS_REG][PADDR_BITS-1:0];
         SYNC_CARD_OFFS_REG:
-            axi_rdata[PADDR_BITS-1:0] <= slv_reg[SYNC_HOST_OFFS_REG][PADDR_BITS-1:0];
+            axi_rdata[PADDR_BITS-1:0] <= slv_reg[SYNC_CARD_OFFS_REG][PADDR_BITS-1:0];
 `endif
 
 `ifdef EN_NET
