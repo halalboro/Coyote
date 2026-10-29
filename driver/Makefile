@@ -62,6 +62,11 @@ coyote_driver-objs += src/vfpga/vfpga_uisr.o
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 
 BUILD_DIR := $(shell pwd)/build
+# Driver debug messages (dbg_info); enabled by default, disable with COYOTE_DEBUG=0
+ifdef COYOTE_DEBUG
+ccflags-y += -DCOYOTE_DEBUG=$(COYOTE_DEBUG)
+endif
+
 ccflags-y += -std=gnu11 -Wno-declaration-after-statement -I$(src)/include -I$(src)/include/reconfig -I$(src)/include/vfpga -I$(src)/include/platform
 
 # To avoid polluting the source files with a bunch of build (*.o, *.mod etc.) files, the source files are temporarily copied to the build folder for compilation

@@ -112,7 +112,10 @@ extern bool en_hmm;
 #define DEV_FPGA_NAME "coyote_fpga"
 
 // Debug prints
+// Can be overridden when building, e.g. make COYOTE_DEBUG=0
+#ifndef COYOTE_DEBUG
 #define COYOTE_DEBUG 1
+#endif
 #if (COYOTE_DEBUG == 0)
     #define dbg_info(...)
 #else
