@@ -69,6 +69,14 @@ if {$cfg(build_static) eq 1} {
 add_files -fileset [get_filesets constrs_1] "$hw_dir/constraints/$cfg(fdev)/shell/impl"
 add_files -fileset [get_filesets constrs_1] "$hw_dir/constraints/$cfg(fdev)/dynamic/impl"
 
+# DDR pin constraints of boards that keep them per channel (e.g., zcu216), added only for the channels in use
+for {set i 0} {$i < 4} {incr i} {
+    set ddr_xdc "$hw_dir/constraints/$cfg(fdev)/ddr/$cfg(fdev)_ddr_$i.xdc"
+    if {$cfg(ddr_$i) eq 1 && [file exists $ddr_xdc]} {
+        add_files -fileset [get_filesets constrs_1] $ddr_xdc
+    }
+}
+
 # Shell
 add_files "$dcp_dir/shell/shell_synthed.dcp"
 set_property SCOPED_TO_CELLS {inst_shell} [get_files "$dcp_dir/shell/shell_synthed.dcp"]

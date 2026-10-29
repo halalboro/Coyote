@@ -392,6 +392,47 @@ if {$cnfg(fdev) eq "u280"} {
 }
 
 # vcu118
+# zcu216; two 32-bit DDR4 component channels (C0, C1) on the PL side, configured as in the board preset
+# (xilinx.com:zcu216:part0:2.0, ddr4_sdram_c0/c1): DDR4-2666 x8 parts in a two-rank clamshell, 4 GB per channel
+if {$cnfg(fdev) eq "zcu216"} {
+    set ecc 0
+
+    for {set i 0}  {$i < 2} {incr i} {
+        if {$cnfg(ddr_$i) eq 1} {
+            # Interfaces; the 300 MHz reference clocks come from two Si570s
+            set cmd "set c$i\_ddr4 \[ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:ddr4_rtl:1.0 c$i\_ddr4 ]
+                    set c$i\_sys_clk_0 \[ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:diff_clock_rtl:1.0 c$i\_sys_clk_0 ]
+                    set_property -dict \[ list CONFIG.FREQ_HZ {300000000} ] \$c$i\_sys_clk_0"
+            eval $cmd
+
+            # Memory controller
+            set cmd "set ddr4_$i \[ create_bd_cell -type ip -vlnv xilinx.com:ip:ddr4:2.2 ddr4_$i ]
+                    set_property -dict \[ list \
+                        CONFIG.C0.BANK_GROUP_WIDTH {2} \
+                        CONFIG.C0.CKE_WIDTH {1} \
+                        CONFIG.C0.CS_WIDTH {2} \
+                        CONFIG.C0.ODT_WIDTH {1} \
+                        CONFIG.C0.ControllerType {DDR4_SDRAM} \
+                        CONFIG.C0.DDR4_AxiSelection {true} \
+                        CONFIG.C0.DDR4_AxiAddressWidth {32} \
+                        CONFIG.C0.DDR4_AxiDataWidth {256} \
+                        CONFIG.C0.DDR4_CasLatency {18} \
+                        CONFIG.C0.DDR4_CasWriteLatency {14} \
+                        CONFIG.C0.DDR4_Clamshell {true} \
+                        CONFIG.C0.DDR4_DataMask {DM_NO_DBI} \
+                        CONFIG.C0.DDR4_DataWidth {32} \
+                        CONFIG.C0.DDR4_Ecc {false} \
+                        CONFIG.C0.DDR4_InputClockPeriod {3334} \
+                        CONFIG.C0.DDR4_MemoryPart {MT40A1G8WE-075E} \
+                        CONFIG.C0.DDR4_MemoryType {Components} \
+                        CONFIG.C0.DDR4_TimePeriod {750} \
+                    ] \$ddr4_$i
+                    set rst_ddr4_$i\_300M \[ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_ddr4_$i\_300M ]"
+            eval $cmd
+        }
+    }
+}
+
 if {$cnfg(fdev) eq "vcu118"} {
     set ecc 0
 

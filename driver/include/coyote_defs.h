@@ -348,13 +348,22 @@ extern bool en_hmm;
 // If more needed, change value and recompile driver. On UltraScale+ devices,
 // there is no fine-grained control over the memory bank to which a buffer is
 // allocated; that is N_MEM_BLOCKS is equal to 1
-// Zynq platforms share the UltraScale+ fabric (and card memory is not supported yet), hence the same constants
-#if defined(PLATFORM_ULTRASCALE_PLUS) || defined(PLATFORM_ZYNQ)
+#ifdef PLATFORM_ULTRASCALE_PLUS
     #define N_MEM_BLOCKS 1
     #define MEM_BLOCK_SIZE 0    // doesn't matter; effectively unused in this case but needed to compile
     #define MEM_START (256UL * 1024UL * 1024UL)
     #define N_SMALL_CHUNKS (1024UL * 1024UL)
     #define N_LARGE_CHUNKS (1024UL * 1024UL)
+#endif
+
+// On Zynq platforms (ZCU216), card memory is one 4 GB PL DDR4 channel; both regions use 4 KB chunks, so after the first
+// 256 MB, 1 GB is left for regular pages and 2.75 GB for huge pages (the huge page region then starts 2 MB-aligned)
+#ifdef PLATFORM_ZYNQ
+    #define N_MEM_BLOCKS 1
+    #define MEM_BLOCK_SIZE 0    // doesn't matter; effectively unused in this case but needed to compile
+    #define MEM_START (256UL * 1024UL * 1024UL)
+    #define N_SMALL_CHUNKS (256UL * 1024UL)
+    #define N_LARGE_CHUNKS (704UL * 1024UL)
 #endif
 
 // On Versal devices, users have fine-grained control over the HBM bank 

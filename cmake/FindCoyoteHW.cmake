@@ -468,18 +468,17 @@ macro(validation_checks_hw)
             set(HOST_IF "zynq")
             set(FPGA_PART xczu49dr-ffvf1760-2-e CACHE STRING "FPGA Part" FORCE)
 
-            # TODO (ZCU216): The board has PL-side DDR4, which could be used as card memory in the future
-            # For now, only host (PS DDR4) memory is supported
-            set(DDR_SIZE 0)
-            set(N_DDR_CHAN 0)
+            # DDR configuration: the board has two 4 GB PL DDR4 channels (C0, C1); card memory uses C0 for now
+            set(DDR_SIZE 32)
+            set(N_DDR_CHAN 1)
 
             # No HBM on the zcu216
             set(HCLK_F 1)
             set(HBM_SIZE 0)
 
-            # No card memory, hence no striping
-            set(MC_SIZE 0)
-            set(N_STRIPE_CHAN 0)
+            # Striping
+            set(MC_SIZE ${DDR_SIZE})
+            set(N_STRIPE_CHAN ${N_DDR_CHAN})
             set(MEM_OFFSET 0)
 
         # Fail on unsupported device
@@ -488,7 +487,7 @@ macro(validation_checks_hw)
         endif()
         message("** Target platform ${FDEV_NAME}")
 
-        # Zynq-based platforms (experimental): only host streams are supported for now
+        # Zynq-based platforms (experimental): host streams and card memory (PL DDR4) are supported for now
         # There is no pre-built static checkpoint or floorplan, so the full design is built with BUILD_STATIC=1
         if(HOST_IF STREQUAL "zynq")
             if(NOT BUILD_STATIC)
@@ -499,9 +498,6 @@ macro(validation_checks_hw)
             endif()
             if(EN_PR)
                 message(FATAL_ERROR "${FDEV_NAME}: application-level reconfiguration (EN_PR=1) is not supported yet.")
-            endif()
-            if(EN_MEM)
-                message(FATAL_ERROR "${FDEV_NAME}: card memory (EN_MEM=1) is not supported yet.")
             endif()
             if(EN_RDMA OR EN_TCP OR EN_SNIFFER)
                 message(FATAL_ERROR "${FDEV_NAME}: networking is not supported yet.")
@@ -520,7 +516,7 @@ macro(validation_checks_hw)
         ## ! u280 has both DDR and HBM, HBM enabled by default; if DDR is required add u280 in DDR_DEV and remove it from HBM_DEV
         ## ! v80 has both DDR and HBM, HBM is enabled by default and supported; DDR not supported yet
         ##
-        set(DDR_DEV "u200" "u250")
+        set(DDR_DEV "u200" "u250" "zcu216")
         set(HBM_DEV "u55c" "u280" "v80")
 
         list(FIND DDR_DEV ${FDEV_NAME} TMP_DEV)

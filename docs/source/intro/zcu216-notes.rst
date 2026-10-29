@@ -10,7 +10,7 @@ the host is the on-chip ARM processing system (PS). Since the programmable logic
 (including the MMU, vFPGAs and user logic) are shared with the Alveo cards; only the static layer, the driver platform layer
 and a few build options differ.
 
-.. warning:: Support for the ZCU216 is experimental. It has been validated on hardware (PYNQ 2.7, Linux 5.4) with Examples 2, 3, 4, 7 and 8. Currently, only host streams are supported.
+.. warning:: Support for the ZCU216 is experimental. It has been validated on hardware (PYNQ 2.7, Linux 5.4) with Examples 1, 2, 3, 4, 7 and 8. Host streams and card memory (one PL DDR4 channel) are supported.
 
 Architecture
 ------------------------------------------
@@ -84,7 +84,7 @@ Supported features
 ============================ ==============================================
 Example                      Status
 ============================ ==============================================
-1 Hello World                ❌ (card memory)
+1 Hello World                ✅ (card memory)
 2 HLS Vector Add             ✅
 3 Multi-tenancy              ✅ (4 vFPGAs)
 4 User interrupts            ✅
@@ -97,5 +97,13 @@ Example                      Status
 11 Traffic sniffer           ❌
 ============================ ==============================================
 
-Future work includes the PL-side DDR4 as card memory, shell and vFPGA reconfiguration (which requires a floorplan around the RF data converters,
+Card memory
+------------------------------------------
+The board has two 4 GB PL DDR4 channels (C0 and C1, 32-bit DDR4-2666, x8 parts in a two-rank clamshell). With ``EN_MEM=1``,
+channel C0 is used as card memory; the memory controller is configured as in the board preset (``MT40A1G8WE-075E``), which
+calibrates on a Rev A board. Its pins are in ``hw/constraints/zcu216/ddr``, generated from the Vivado board files and only
+added to builds that use the channel. The driver splits the 4 GB into 256 MB that are left unused, 1 GB for regular pages and
+2.75 GB for huge pages. Example 1 reaches about 4.5 GB/s with the data read from and written to card memory at the same time.
+
+Future work includes the second DDR4 channel, shell and vFPGA reconfiguration (which requires a floorplan around the RF data converters,
 and handing the configuration port over from PCAP to ICAP), and exposing the RF data converters as a shell service.

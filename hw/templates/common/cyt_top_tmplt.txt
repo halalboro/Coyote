@@ -103,6 +103,44 @@ module cyt_top (
     (* io_buffer_type = "none" *) input  wire                 c1_sys_clk_p,
     (* io_buffer_type = "none" *) input  wire                 c1_sys_clk_n,
     {% endif %}
+    {% if cnfg.fdev == 'zcu216' and cnfg.ddr_0 %}
+    // DDR4 C0 (PL side)
+    (* io_buffer_type = "none" *) output wire              c0_ddr4_act_n,
+    (* io_buffer_type = "none" *) output wire[16:0]        c0_ddr4_adr,
+    (* io_buffer_type = "none" *) output wire[1:0]         c0_ddr4_ba,
+    (* io_buffer_type = "none" *) output wire[1:0]         c0_ddr4_bg,
+    (* io_buffer_type = "none" *) output wire[0:0]         c0_ddr4_ck_c,
+    (* io_buffer_type = "none" *) output wire[0:0]         c0_ddr4_ck_t,
+    (* io_buffer_type = "none" *) output wire[0:0]         c0_ddr4_cke,
+    (* io_buffer_type = "none" *) output wire[1:0]         c0_ddr4_cs_n,
+    (* io_buffer_type = "none" *) inout  wire[3:0]         c0_ddr4_dm_dbi_n,
+    (* io_buffer_type = "none" *) inout  wire[31:0]        c0_ddr4_dq,
+    (* io_buffer_type = "none" *) inout  wire[3:0]         c0_ddr4_dqs_c,
+    (* io_buffer_type = "none" *) inout  wire[3:0]         c0_ddr4_dqs_t,
+    (* io_buffer_type = "none" *) output wire[0:0]         c0_ddr4_odt,
+    (* io_buffer_type = "none" *) output wire              c0_ddr4_reset_n,
+    (* io_buffer_type = "none" *) input  wire              c0_sys_clk_p,
+    (* io_buffer_type = "none" *) input  wire              c0_sys_clk_n{% if cnfg.ddr_1 %},{% endif %}
+    {% endif %}
+    {% if cnfg.fdev == 'zcu216' and cnfg.ddr_1 %}
+    // DDR4 C1 (PL side)
+    (* io_buffer_type = "none" *) output wire              c1_ddr4_act_n,
+    (* io_buffer_type = "none" *) output wire[16:0]        c1_ddr4_adr,
+    (* io_buffer_type = "none" *) output wire[1:0]         c1_ddr4_ba,
+    (* io_buffer_type = "none" *) output wire[1:0]         c1_ddr4_bg,
+    (* io_buffer_type = "none" *) output wire[0:0]         c1_ddr4_ck_c,
+    (* io_buffer_type = "none" *) output wire[0:0]         c1_ddr4_ck_t,
+    (* io_buffer_type = "none" *) output wire[0:0]         c1_ddr4_cke,
+    (* io_buffer_type = "none" *) output wire[1:0]         c1_ddr4_cs_n,
+    (* io_buffer_type = "none" *) inout  wire[3:0]         c1_ddr4_dm_dbi_n,
+    (* io_buffer_type = "none" *) inout  wire[31:0]        c1_ddr4_dq,
+    (* io_buffer_type = "none" *) inout  wire[3:0]         c1_ddr4_dqs_c,
+    (* io_buffer_type = "none" *) inout  wire[3:0]         c1_ddr4_dqs_t,
+    (* io_buffer_type = "none" *) output wire[0:0]         c1_ddr4_odt,
+    (* io_buffer_type = "none" *) output wire              c1_ddr4_reset_n,
+    (* io_buffer_type = "none" *) input  wire              c1_sys_clk_p,
+    (* io_buffer_type = "none" *) input  wire              c1_sys_clk_n
+    {% endif %}
     {% if cnfg.fdev == 'u250' or cnfg.fdev == 'u200' %}
     // DDR4 2
     (* io_buffer_type = "none" *) output wire                 c2_ddr4_act_n,
@@ -557,6 +595,42 @@ module cyt_top (
         .c1_ddr4_dqs_t(c1_ddr4_dqs_t),
         .c1_ddr4_odt(c1_ddr4_odt),
         .c1_ddr4_par(c1_ddr4_par),
+        .c1_ddr4_reset_n(c1_ddr4_reset_n),
+        .c1_sys_clk_p(c1_sys_clk_p),
+        .c1_sys_clk_n(c1_sys_clk_n),
+    {% endif %}
+    {% if cnfg.fdev == 'zcu216' and cnfg.ddr_0 %}
+        .c0_ddr4_act_n(c0_ddr4_act_n),
+        .c0_ddr4_adr(c0_ddr4_adr),
+        .c0_ddr4_ba(c0_ddr4_ba),
+        .c0_ddr4_bg(c0_ddr4_bg),
+        .c0_ddr4_ck_c(c0_ddr4_ck_c),
+        .c0_ddr4_ck_t(c0_ddr4_ck_t),
+        .c0_ddr4_cke(c0_ddr4_cke),
+        .c0_ddr4_cs_n(c0_ddr4_cs_n),
+        .c0_ddr4_dm_dbi_n(c0_ddr4_dm_dbi_n),
+        .c0_ddr4_dq(c0_ddr4_dq),
+        .c0_ddr4_dqs_c(c0_ddr4_dqs_c),
+        .c0_ddr4_dqs_t(c0_ddr4_dqs_t),
+        .c0_ddr4_odt(c0_ddr4_odt),
+        .c0_ddr4_reset_n(c0_ddr4_reset_n),
+        .c0_sys_clk_p(c0_sys_clk_p),
+        .c0_sys_clk_n(c0_sys_clk_n),
+    {% endif %}
+    {% if cnfg.fdev == 'zcu216' and cnfg.ddr_1 %}
+        .c1_ddr4_act_n(c1_ddr4_act_n),
+        .c1_ddr4_adr(c1_ddr4_adr),
+        .c1_ddr4_ba(c1_ddr4_ba),
+        .c1_ddr4_bg(c1_ddr4_bg),
+        .c1_ddr4_ck_c(c1_ddr4_ck_c),
+        .c1_ddr4_ck_t(c1_ddr4_ck_t),
+        .c1_ddr4_cke(c1_ddr4_cke),
+        .c1_ddr4_cs_n(c1_ddr4_cs_n),
+        .c1_ddr4_dm_dbi_n(c1_ddr4_dm_dbi_n),
+        .c1_ddr4_dq(c1_ddr4_dq),
+        .c1_ddr4_dqs_c(c1_ddr4_dqs_c),
+        .c1_ddr4_dqs_t(c1_ddr4_dqs_t),
+        .c1_ddr4_odt(c1_ddr4_odt),
         .c1_ddr4_reset_n(c1_ddr4_reset_n),
         .c1_sys_clk_p(c1_sys_clk_p),
         .c1_sys_clk_n(c1_sys_clk_n),
