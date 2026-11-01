@@ -92,7 +92,13 @@ set(DDR_AUTO 1 CACHE STRING "Automatic placement of DDRs")
 
 # Striping fragmentation size
 # NOTE: On UltraScale+ HBM devices, this variable has no effect, since striping is done through the RAMA IP with the default fragmentation size
-set(STRIPE_FRAG_SIZE 1024 CACHE STRING "Stripe fragment size")
+# NOTE: On the zcu216 the default is 4096: the DDR interconnect stalls a request whose ID is still outstanding on the
+# other channel, and the stripe keeps the ID, so with 1 KB fragments the two channels take turns (~2.6 vs ~4.5 GB/s)
+if(FDEV_NAME STREQUAL "zcu216")
+    set(STRIPE_FRAG_SIZE 4096 CACHE STRING "Stripe fragment size")
+else()
+    set(STRIPE_FRAG_SIZE 1024 CACHE STRING "Stripe fragment size")
+endif()
 
 # Concatenate HBM bank ports to achieve higher throughput
 # Currently only supported on HBM-enabled UltraScale+ devices; may be supported on Versal devices in the future
@@ -468,9 +474,10 @@ macro(validation_checks_hw)
             set(HOST_IF "zynq")
             set(FPGA_PART xczu49dr-ffvf1760-2-e CACHE STRING "FPGA Part" FORCE)
 
-            # DDR configuration: the board has two 4 GB PL DDR4 channels (C0, C1); card memory uses C0 for now
+            # DDR configuration: two 4 GB PL DDR4 channels (C0, C1), striped into 8 GB of card memory
+            # (the driver's card memory layout assumes both channels, see PLATFORM_ZYNQ in coyote_defs.h)
             set(DDR_SIZE 32)
-            set(N_DDR_CHAN 1)
+            set(N_DDR_CHAN 2)
 
             # No HBM on the zcu216
             set(HCLK_F 1)

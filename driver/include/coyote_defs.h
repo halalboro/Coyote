@@ -356,14 +356,14 @@ extern bool en_hmm;
     #define N_LARGE_CHUNKS (1024UL * 1024UL)
 #endif
 
-// On Zynq platforms (ZCU216), card memory is one 4 GB PL DDR4 channel; both regions use 4 KB chunks, so after the first
-// 256 MB, 1 GB is left for regular pages and 2.75 GB for huge pages (the huge page region then starts 2 MB-aligned)
+// On Zynq platforms (ZCU216), card memory is 8 GB, striped over two 4 GB PL DDR4 channels; both regions use 4 KB chunks,
+// so after the first 256 MB, 2 GB are left for regular pages and 5.75 GB for huge pages (whose region starts 2 MB-aligned)
 #ifdef PLATFORM_ZYNQ
     #define N_MEM_BLOCKS 1
     #define MEM_BLOCK_SIZE 0    // doesn't matter; effectively unused in this case but needed to compile
     #define MEM_START (256UL * 1024UL * 1024UL)
-    #define N_SMALL_CHUNKS (256UL * 1024UL)
-    #define N_LARGE_CHUNKS (704UL * 1024UL)
+    #define N_SMALL_CHUNKS (512UL * 1024UL)
+    #define N_LARGE_CHUNKS (1472UL * 1024UL)
 #endif
 
 // On Versal devices, users have fine-grained control over the HBM bank 
