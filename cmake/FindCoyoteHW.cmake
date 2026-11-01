@@ -92,13 +92,7 @@ set(DDR_AUTO 1 CACHE STRING "Automatic placement of DDRs")
 
 # Striping fragmentation size
 # NOTE: On UltraScale+ HBM devices, this variable has no effect, since striping is done through the RAMA IP with the default fragmentation size
-# NOTE: On the zcu216 the default is 4096: the DDR interconnect stalls a request whose ID is still outstanding on the
-# other channel, and the stripe keeps the ID, so with 1 KB fragments the two channels take turns (~2.6 vs ~4.5 GB/s)
-if(FDEV_NAME STREQUAL "zcu216")
-    set(STRIPE_FRAG_SIZE 4096 CACHE STRING "Stripe fragment size")
-else()
-    set(STRIPE_FRAG_SIZE 1024 CACHE STRING "Stripe fragment size")
-endif()
+set(STRIPE_FRAG_SIZE 1024 CACHE STRING "Stripe fragment size")
 
 # Concatenate HBM bank ports to achieve higher throughput
 # Currently only supported on HBM-enabled UltraScale+ devices; may be supported on Versal devices in the future

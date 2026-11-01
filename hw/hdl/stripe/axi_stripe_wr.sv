@@ -83,10 +83,14 @@ module axi_stripe_wr (
 
 localparam integer FRAG_LOG_BITS = $clog2(STRIPE_FRAG_SIZE);
 localparam integer BEAT_LOG_BITS = $clog2(AXI_DATA_BITS/8);
-localparam integer N_OUTSTANDING_STRIPE = 8 * N_OUTSTANDING;
 
-localparam integer FRAG_BEATS = $ceil(STRIPE_FRAG_SIZE/(AXI_DATA_BITS/8));
-localparam integer FRAG_BEATS_BITS = $clog2(FRAG_BEATS) + 1;
+// Each channel gets its own AXI ID (the channel number), so the interconnect can keep requests to all channels in flight
+// (it holds back a request whose ID is still outstanding at another slave). Write responses of different channels can then
+// come back in any order; they are counted per channel, and the response to an original request is sent once every channel
+// has answered all of its parts. Each channel answers its own parts in order, so the counts always belong to the oldest requests.
+localparam integer N_SEQ = 64;
+localparam integer SUB_BITS = 8;
+localparam integer BCNT_BITS = 12;
 
 // FSM
 typedef enum logic[0:0] {ST_IDLE, ST_PARSE} state_t;
@@ -95,7 +99,7 @@ logic[0:0] state_C, state_N;
 logic [AXI_ADDR_BITS-1:0] awaddr_C, awaddr_N;
 logic [1:0] awburst_C, awburst_N;
 logic [3:0] awcache_C, awcache_N;
-logic [1:0] awid_C, awid_N;
+logic [AXI_ID_BITS-1:0] awid_C, awid_N;
 logic [7:0] awlen_C, awlen_N;
 logic [0:0] awlock_C, awlock_N;
 logic [2:0] awprot_C, awprot_N;
@@ -104,6 +108,7 @@ logic [3:0] awregion_C, awregion_N;
 logic [2:0] awsize_C, awsize_N;
 
 logic [AXI_ADDR_BITS-1:0] paddr_C, paddr_N;
+logic [N_STRIPE_CHAN_BITS-1:0] pchan_C, pchan_N;
 logic [7:0] plen_C, plen_N;
 logic done_C, done_N;
 
@@ -118,7 +123,31 @@ assign lsb_mask = (1 << FRAG_LOG_BITS) - 1;
 logic [AXI_ADDR_BITS-1:0] msb_mask;
 assign msb_mask = (~lsb_mask) << N_STRIPE_CHAN_BITS;
 
-logic [FRAG_BEATS_BITS-1:0] cnt_W;
+// Parts of the current original request, per channel
+logic [N_STRIPE_CHAN-1:0][SUB_BITS-1:0] nsub_C, nsub_N;
+
+// Original requests waiting for their response: ID and parts per channel
+typedef struct packed {
+    logic [N_STRIPE_CHAN-1:0][SUB_BITS-1:0] nsub;
+    logic [AXI_ID_BITS-1:0] id;
+} wr_seq_t;
+
+metaIntf #(.STYPE(wr_seq_t)) seq_snk ();
+metaIntf #(.STYPE(wr_seq_t)) seq_src ();
+
+// Length of each part, for the write data
+metaIntf #(.STYPE(logic[7:0])) len_snk ();
+metaIntf #(.STYPE(logic[7:0])) len_src ();
+
+logic [7:0] cnt_W;
+logic aw_hs;
+logic w_hs;
+
+logic [N_STRIPE_CHAN-1:0][BCNT_BITS-1:0] bcnt_C;
+logic [N_STRIPE_CHAN-1:0] b_in;
+logic b_ok;
+logic b_hs;
+logic berr_C;
 
 // REG
 always_ff @(posedge aclk) begin
@@ -137,8 +166,10 @@ always_ff @(posedge aclk) begin
         awsize_C <= 'X;
 
         paddr_C <= 'X;
+        pchan_C <= 'X;
         plen_C <= 'X;
         done_C <= 1'b0;
+        nsub_C <= '0;
 
         cnt_W <= 0;
     end else begin
@@ -156,12 +187,14 @@ always_ff @(posedge aclk) begin
         awsize_C <= awsize_N;
 
         paddr_C <= paddr_N;
+        pchan_C <= pchan_N;
         plen_C <= plen_N;
         done_C <= done_N;
+        nsub_C <= nsub_N;
 
-        if (m_axi_wlast && m_axi_wvalid && m_axi_wready) begin
+        if (w_hs && m_axi_wlast) begin
             cnt_W <= 0;
-        end else if (m_axi_wvalid && m_axi_wready) begin
+        end else if (w_hs) begin
             cnt_W <= cnt_W + 1'b1;
         end
     end
@@ -174,7 +207,7 @@ always_comb begin
             state_N = s_axi_awvalid ? ST_PARSE : ST_IDLE;
 
         ST_PARSE:
-            state_N = (done_C & m_axi_awvalid & m_axi_awready) ? ST_IDLE : ST_PARSE;
+            state_N = (done_C & aw_hs) ? ST_IDLE : ST_PARSE;
     endcase
 end
 
@@ -192,14 +225,17 @@ always_comb begin
     awsize_N = awsize_C;
 
     paddr_N = paddr_C;
+    pchan_N = pchan_C;
     plen_N = plen_C;
     done_N = done_C;
+    nsub_N = nsub_C;
+
+    awaddr_remapped = 'X;
 
     slen = ((STRIPE_FRAG_SIZE >> BEAT_LOG_BITS) - (((s_axi_awaddr - MEM_OFFSET) & lsb_mask) >> BEAT_LOG_BITS)) - 1;
     clen = ((STRIPE_FRAG_SIZE >> BEAT_LOG_BITS) - ((awaddr_C & lsb_mask) >> BEAT_LOG_BITS)) - 1;
 
     s_axi_awready = 1'b0;
-    m_axi_awvalid = 1'b0;
 
     unique case (state_C)
         ST_IDLE: begin
@@ -215,8 +251,11 @@ always_comb begin
                 awregion_N = s_axi_awregion;
                 awsize_N = s_axi_awsize;
 
+                nsub_N = '0;
+
                 awaddr_remapped = s_axi_awaddr - MEM_OFFSET;
 
+                pchan_N = awaddr_remapped[FRAG_LOG_BITS+:N_STRIPE_CHAN_BITS];
                 paddr_N = (awaddr_remapped[FRAG_LOG_BITS+:N_STRIPE_CHAN_BITS] << MC_SIZE) | (awaddr_remapped & lsb_mask) | ((awaddr_remapped & msb_mask) >> N_STRIPE_CHAN_BITS) + MEM_OFFSET;
                 awaddr_N = ((awaddr_remapped >> FRAG_LOG_BITS) << FRAG_LOG_BITS) + STRIPE_FRAG_SIZE;           
 
@@ -233,11 +272,14 @@ always_comb begin
         end
 
         ST_PARSE: begin
-            if (m_axi_awready) begin
-                m_axi_awvalid = 1'b1;
+            if (aw_hs) begin
+                nsub_N[pchan_C] = nsub_C[pchan_C] + 1;
+            end
 
+            if (aw_hs & ~done_C) begin
                 awaddr_remapped = awaddr_C;
 
+                pchan_N = awaddr_remapped[FRAG_LOG_BITS+:N_STRIPE_CHAN_BITS];
                 paddr_N = (awaddr_remapped[FRAG_LOG_BITS+:N_STRIPE_CHAN_BITS] << MC_SIZE) | (awaddr_remapped & lsb_mask) | ((awaddr_remapped & msb_mask) >> N_STRIPE_CHAN_BITS) + MEM_OFFSET;
                 awaddr_N = ((awaddr_remapped >> FRAG_LOG_BITS) << FRAG_LOG_BITS) + STRIPE_FRAG_SIZE; 
     
@@ -256,10 +298,13 @@ always_comb begin
 end
 
 // AW
+assign m_axi_awvalid = (state_C == ST_PARSE) && seq_snk.ready && len_snk.ready;
+assign aw_hs = m_axi_awvalid & m_axi_awready;
+
 assign m_axi_awaddr = paddr_C;
 assign m_axi_awburst = awburst_C;
 assign m_axi_awcache = awcache_C;
-assign m_axi_awid = awid_C;
+assign m_axi_awid = pchan_C;
 assign m_axi_awlen = plen_C;
 assign m_axi_awlock = awlock_C;
 assign m_axi_awprot = awprot_C;
@@ -267,26 +312,66 @@ assign m_axi_awqos = awqos_C;
 assign m_axi_awregion = awregion_C;
 assign m_axi_awsize = awsize_C;
 
-// B
-assign s_axi_bid = m_axi_bid;
-assign s_axi_bresp = m_axi_bresp;
-assign s_axi_bvalid = seq_src.data ? m_axi_bvalid : 1'b0;
-assign m_axi_bready = seq_src.data ? s_axi_bready : 1'b1;
+// SEQ, one entry per original request, pushed with its last part
+queue_meta #(.QDEPTH(N_SEQ)) inst_seq_que (.aclk(aclk), .aresetn(aresetn), .s_meta(seq_snk), .m_meta(seq_src));
 
-// W
+always_comb begin
+    seq_snk.data.id = awid_C;
+    seq_snk.data.nsub = nsub_C;
+    seq_snk.data.nsub[pchan_C] = nsub_C[pchan_C] + 1;
+end
+assign seq_snk.valid = aw_hs & done_C;
+
+// W, cut into the parts
+queue_meta #(.QDEPTH(N_SEQ)) inst_len_que (.aclk(aclk), .aresetn(aresetn), .s_meta(len_snk), .m_meta(len_src));
+
+assign len_snk.data = plen_C;
+assign len_snk.valid = aw_hs;
+
 assign m_axi_wdata = s_axi_wdata;
 assign m_axi_wstrb = s_axi_wstrb;
-assign m_axi_wvalid = s_axi_wvalid;
-assign s_axi_wready = m_axi_wready;
-assign m_axi_wlast = (s_axi_wlast || (cnt_W == FRAG_BEATS - 1));
+assign m_axi_wvalid = s_axi_wvalid & len_src.valid;
+assign s_axi_wready = m_axi_wready & len_src.valid;
+assign m_axi_wlast = (cnt_W == len_src.data);
 
-// SEQ
-metaIntf #(.STYPE(logic)) seq_snk ();
-metaIntf #(.STYPE(logic)) seq_src ();
-queue_meta #(.QDEPTH(N_OUTSTANDING_STRIPE)) inst_seq_que (.aclk(aclk), .aresetn(aresetn), .s_meta(seq_snk), .m_meta(seq_src));
+assign w_hs = m_axi_wvalid & m_axi_wready;
+assign len_src.ready = w_hs & m_axi_wlast;
 
-assign seq_snk.data = done_C;
-assign seq_src.ready = m_axi_bvalid & s_axi_bready;
-assign seq_snk.valid = m_axi_awvalid & m_axi_awready;
+// B
+assign m_axi_bready = 1'b1;
+
+for (genvar i = 0; i < N_STRIPE_CHAN; i++) begin
+    assign b_in[i] = m_axi_bvalid && (m_axi_bid[N_STRIPE_CHAN_BITS-1:0] == i);
+end
+
+always_comb begin
+    b_ok = seq_src.valid;
+    for (int i = 0; i < N_STRIPE_CHAN; i++)
+        if (bcnt_C[i] < seq_src.data.nsub[i])
+            b_ok = 1'b0;
+end
+
+assign s_axi_bvalid = b_ok;
+assign s_axi_bid = seq_src.data.id;
+assign s_axi_bresp = berr_C ? 2'b10 : 2'b00;
+
+assign b_hs = s_axi_bvalid & s_axi_bready;
+assign seq_src.ready = b_hs;
+
+always_ff @(posedge aclk) begin
+    if (aresetn == 1'b0) begin
+        bcnt_C <= '0;
+        berr_C <= 1'b0;
+    end else begin
+        for (int i = 0; i < N_STRIPE_CHAN; i++)
+            bcnt_C[i] <= bcnt_C[i] + b_in[i] - (b_hs ? seq_src.data.nsub[i] : 0);
+
+        // Error responses are reported with the next response to the shell
+        if (b_hs)
+            berr_C <= m_axi_bvalid && (m_axi_bresp != 2'b00);
+        else if (m_axi_bvalid && (m_axi_bresp != 2'b00))
+            berr_C <= 1'b1;
+    end
+end
 
 endmodule

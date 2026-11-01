@@ -106,10 +106,12 @@ Vivado board files and only added to builds that use the channel. The driver spl
 2 GB for regular pages and 5.75 GB for huge pages; this layout is fixed at compile time, so a build with only one channel needs
 the driver layout changed as well.
 
-The stripe fragment size defaults to 4 KB on the ZCU216 (1 KB on the other devices). The DDR interconnect holds back a request
-whose AXI ID is still outstanding on the other channel, and the stripe keeps the ID, so with 1 KB fragments the two channels take
-turns: Example 1 reaches about 2.6 GB/s with 1 KB fragments and about 4.5 GB/s with 4 KB fragments, with the data read from and
-written to card memory at the same time.
+Card memory is striped over the channels in 1 KB fragments. The stripe (``hw/hdl/stripe``) gives every channel its own AXI
+ID, because the DDR interconnect holds back a request whose ID is still outstanding at another channel; with one shared ID
+the channels take turns (about 2.6 GB/s). Responses can then return out of order, so reads are buffered per channel and
+returned in request order, and write responses are counted per channel. Example 1 reaches about 8.2 GB/s with the data read
+from and written to card memory at the same time (about 4.5 GB/s with one channel). This applies to every device that
+stripes over DDR channels, not only the ZCU216.
 
 Future work includes shell and vFPGA reconfiguration (which requires a floorplan around the RF data converters,
 and handing the configuration port over from PCAP to ICAP), and exposing the RF data converters as a shell service.
