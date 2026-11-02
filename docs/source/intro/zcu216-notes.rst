@@ -115,20 +115,30 @@ stripes over DDR channels, not only the ZCU216.
 
 RF data converters
 ------------------
-This part is built but has **not** been run on a board. ``-DEN_RF=1`` adds the RF data converter to the shell; the default is
-off, and images built without it never touch the converters or the clock chips. Do not load such an image, program the clock
-chips or enable a DAC before checking what is connected to the RF outputs.
+This part is experimental: control and clocks have been tested on a board, but no samples have been captured and no DAC has
+been driven with data. ``-DEN_RF=1`` adds the RF data converter to the shell; the default is off, and images built without it
+never touch the converters or the clock chips. Do not load such an image, program the clock chips or enable a DAC before
+checking what is connected to the RF outputs.
+
+**The DAC tile starts by itself:** if its reference clock is already running when an image with the converter is loaded, the
+tile goes to its running state (state 15) without any software command. Clocks stay programmed across image loads, so this
+is the normal case after the first load. Shut the tile down right after loading if the DAC has to stay off.
 
 The build has one ADC (tile 2, block 0, package pins AJ5/AJ4) and one DAC (tile 2, block 0, package pins M5/M4), both sampling
 at 2.4576 GS/s from a 245.76 MHz reference clock on BA5/BB5 (ADC) and B5/A5 (DAC), with SYSREF on D2/D1. These clock settings
 follow QICK's public ZCU216 design. The configuration is in ``hw/bd/zynq_us_plus/cr_rf.tcl``. The converter's control registers
 are at ``0xA800_0000`` (256 KB), reached through the shell's control interconnect. The DAC data and valid inputs are tied to 0
-and the ADC output is discarded, so there is no data path to or from a vFPGA yet, and the build has no software support. A DAC
+and the ADC output is discarded, so there is no data path to or from a vFPGA yet, and Coyote's own software has no RF support. A DAC
 with zero data is not necessarily silent: once it is running, its output can still carry bias and clock leakage.
 
 The RF ports need ``IO_BUFFER_TYPE=none`` in synthesis, where the shell is a black box, or Vivado inserts I/O buffers on them.
 The property has to be removed again after linking (``scripts/impl/link.tcl.in``), because ``opt_design`` otherwise fails DRC
 RPBF-1. The pins are dedicated, so they have no constraints file.
+
+On the board, PYNQ's ``xrfdc`` driver works with this IP version (2.6) when given the parameters from the ``design_rf`` ``.hwh``
+and ``XILINX_XRT=/usr`` and ``BOARD=ZCU216`` in the environment. ``xrfclk.set_ref_clks(lmk_freq=245.76, lmx_freq=491.52)``, the
+settings QICK uses, brings ADC tile 2 to state 15 with its PLL locked. The DAC tile's lock has not been checked with these
+clock settings, because the tile was kept off.
 
 Future work includes shell and vFPGA reconfiguration (which requires a floorplan around the RF data converters,
 and handing the configuration port over from PCAP to ICAP), and a data path and software API for the RF data converters.
