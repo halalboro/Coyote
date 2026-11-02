@@ -83,6 +83,12 @@ module design_user_logic_c{{ c_cnfg }}_{{ c_reg }} (
 
 {% endif %}
 
+{% if ( cnfg.en_rf and ( cnfg.rf_vfpga_id == c_reg ) ) %}
+    // RF DATA CONVERTER STREAMS (16-bit samples, first sample in the lowest bits)
+    AXI4S.s                     axis_rf_recv,
+    AXI4S.m                     axis_rf_send,
+
+{% endif %}
 {% if ( cnfg.en_sniffer and ( cnfg.sniffer_vfpga_id == c_reg ) ) %}
     AXI4S.s                     axis_rx_sniffer,
     AXI4S.s                     axis_tx_sniffer,

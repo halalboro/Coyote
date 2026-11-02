@@ -105,6 +105,12 @@ module design_dynamic_top #(
     metaIntf.m                                  m_filter_config,
 {% endif %}
 
+{% if cnfg.en_rf %}
+    // RF data converter streams
+    AXI4S.s                                     s_axis_rf,
+    AXI4S.m                                     m_axis_rf,
+
+{% endif %}
 {% if cnfg.en_wb %}
     // Writeback
     metaIntf.m                                  m_wback,
@@ -1224,6 +1230,19 @@ module design_dynamic_top #(
         .filter_config_data(m_filter_config.data),
         .filter_config_ready(m_filter_config.ready),
         .filter_config_valid(m_filter_config.valid),
+{% endif %}
+
+{% if ( cnfg.en_rf and ( cnfg.rf_vfpga_id == i ) ) %}
+        .axis_rf_sink_tdata(s_axis_rf.tdata),
+        .axis_rf_sink_tkeep(s_axis_rf.tkeep),
+        .axis_rf_sink_tlast(s_axis_rf.tlast),
+        .axis_rf_sink_tready(s_axis_rf.tready),
+        .axis_rf_sink_tvalid(s_axis_rf.tvalid),
+        .axis_rf_src_tdata(m_axis_rf.tdata),
+        .axis_rf_src_tkeep(m_axis_rf.tkeep),
+        .axis_rf_src_tlast(m_axis_rf.tlast),
+        .axis_rf_src_tready(m_axis_rf.tready),
+        .axis_rf_src_tvalid(m_axis_rf.tvalid),
 {% endif %}
 
 {% if cnfg.fpga_arch == 'ultrascale_plus' %}

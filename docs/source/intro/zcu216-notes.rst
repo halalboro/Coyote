@@ -115,8 +115,8 @@ stripes over DDR channels, not only the ZCU216.
 
 RF data converters
 ------------------
-This part is experimental: control and clocks have been tested on a board, but no samples have been captured and no DAC has
-been driven with data. ``-DEN_RF=1`` adds the RF data converter to the shell; the default is off, and images built without it
+This part is experimental: control and clocks have been tested on a board, and the data path has only been simulated and built.
+No samples have been captured and no DAC has been driven with data. ``-DEN_RF=1`` adds the RF data converter to the shell; the default is off, and images built without it
 never touch the converters or the clock chips. Do not load such an image, program the clock chips or enable a DAC before
 checking what is connected to the RF outputs.
 
@@ -127,9 +127,27 @@ is the normal case after the first load. Shut the tile down right after loading 
 The build has one ADC (tile 2, block 0, package pins AJ5/AJ4) and one DAC (tile 2, block 0, package pins M5/M4), both sampling
 at 2.4576 GS/s from a 245.76 MHz reference clock on BA5/BB5 (ADC) and B5/A5 (DAC), with SYSREF on D2/D1. These clock settings
 follow QICK's public ZCU216 design. The configuration is in ``hw/bd/zynq_us_plus/cr_rf.tcl``. The converter's control registers
-are at ``0xA800_0000`` (256 KB), reached through the shell's control interconnect. The DAC data and valid inputs are tied to 0
-and the ADC output is discarded, so there is no data path to or from a vFPGA yet, and Coyote's own software has no RF support. A DAC
-with zero data is not necessarily silent: once it is running, its output can still carry bias and clock leakage.
+are at ``0xA800_0000`` (256 KB), reached through the shell's control interconnect. Coyote's own software has no RF support yet.
+A DAC with zero data is not necessarily silent: once it is running, its output can still carry bias and clock leakage.
+
+The converters connect to one vFPGA, chosen with ``-DRF_VFPGA_ID`` (default 0), through two 512-bit streams on the vFPGA clock:
+``axis_rf_recv`` carries ADC samples and ``axis_rf_send`` carries DAC samples. Each converter delivers 8 16-bit samples per
+307.2 MHz clock (4.9 GB/s). The vFPGA has to handle both streams, or the build fails in ``opt_design``; ``examples/13_rf_capture`` shows
+the minimum, discarding ADC data and tying the DAC stream off. The logic is in ``hw/hdl/rf`` (testbench in ``sim/rf``). Both directions are
+off after reset and are enabled through these registers, at ``0xA804_0000``:
+
+====== ===================================================================
+Offset Register
+====== ===================================================================
+0x00   ID, reads ``0x52460001``
+0x04   Bit 0 enables the ADC stream, bit 1 the DAC stream
+0x08   Bit 0 ADC overflow, bit 1 DAC underflow; sticky until disabled
+0x0C   Number of 512-bit words taken from the ADC since it was enabled
+0x10   Number of 512-bit words sent to the DAC since it was enabled
+====== ===================================================================
+
+If the vFPGA stops accepting ADC data, the 512-entry FIFO fills and words are dropped with the overflow flag set. If the DAC runs out of
+data after its first word, it outputs zeros with the underflow flag set. Disabling the DAC stream forces its output to zero at once.
 
 The RF ports need ``IO_BUFFER_TYPE=none`` in synthesis, where the shell is a black box, or Vivado inserts I/O buffers on them.
 The property has to be removed again after linking (``scripts/impl/link.tcl.in``), because ``opt_design`` otherwise fails DRC
@@ -141,4 +159,4 @@ settings QICK uses, brings ADC tile 2 to state 15 with its PLL locked. The DAC t
 clock settings, because the tile was kept off.
 
 Future work includes shell and vFPGA reconfiguration (which requires a floorplan around the RF data converters,
-and handing the configuration port over from PCAP to ICAP), and a data path and software API for the RF data converters.
+and handing the configuration port over from PCAP to ICAP), and a software API for the RF data converters.

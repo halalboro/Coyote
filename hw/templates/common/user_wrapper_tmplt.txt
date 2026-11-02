@@ -176,6 +176,20 @@ module design_user_wrapper_{{ c_reg }} (
     (* io_buffer_type = "none" *) output logic                                axis_tcp_src_tvalid,
 {% endif %}
 
+{% if ( cnfg.en_rf and ( cnfg.rf_vfpga_id == c_reg ) ) %}
+    // RF DATA CONVERTER STREAMS
+    (* io_buffer_type = "none" *) input  logic[AXI_DATA_BITS-1:0]             axis_rf_sink_tdata,
+    (* io_buffer_type = "none" *) input  logic[AXI_DATA_BITS/8-1:0]           axis_rf_sink_tkeep,
+    (* io_buffer_type = "none" *) input  logic                                axis_rf_sink_tlast,
+    (* io_buffer_type = "none" *) output logic                                axis_rf_sink_tready,
+    (* io_buffer_type = "none" *) input  logic                                axis_rf_sink_tvalid,
+    (* io_buffer_type = "none" *) output logic[AXI_DATA_BITS-1:0]             axis_rf_src_tdata,
+    (* io_buffer_type = "none" *) output logic[AXI_DATA_BITS/8-1:0]           axis_rf_src_tkeep,
+    (* io_buffer_type = "none" *) output logic                                axis_rf_src_tlast,
+    (* io_buffer_type = "none" *) input  logic                                axis_rf_src_tready,
+    (* io_buffer_type = "none" *) output logic                                axis_rf_src_tvalid,
+{% endif %}
+
 {% if ( cnfg.en_sniffer and ( cnfg.sniffer_vfpga_id == c_reg ) ) %}
     (* io_buffer_type = "none" *) input  logic[AXI_NET_BITS-1:0]              rx_sniffer_tdata,
     (* io_buffer_type = "none" *) input  logic[AXI_NET_BITS/8-1:0]            rx_sniffer_tkeep,
@@ -470,6 +484,22 @@ module design_user_wrapper_{{ c_reg }} (
     assign axis_tcp_src_tlast                   = axis_tcp_src.tlast;
     assign axis_tcp_src.tready                  = axis_tcp_src_tready;
     
+{% endif %}
+
+{% if ( cnfg.en_rf and ( cnfg.rf_vfpga_id == c_reg ) ) %}
+    // RF data converter streams
+    AXI4S axis_rf_recv (.*);
+    AXI4S axis_rf_send (.*);
+    assign axis_rf_recv.tdata   = axis_rf_sink_tdata;
+    assign axis_rf_recv.tkeep   = axis_rf_sink_tkeep;
+    assign axis_rf_recv.tlast   = axis_rf_sink_tlast;
+    assign axis_rf_recv.tvalid  = axis_rf_sink_tvalid;
+    assign axis_rf_sink_tready  = axis_rf_recv.tready;
+    assign axis_rf_src_tdata    = axis_rf_send.tdata;
+    assign axis_rf_src_tkeep    = axis_rf_send.tkeep;
+    assign axis_rf_src_tlast    = axis_rf_send.tlast;
+    assign axis_rf_src_tvalid   = axis_rf_send.tvalid;
+    assign axis_rf_send.tready  = axis_rf_src_tready;
 {% endif %}
 
 {% if ( cnfg.en_sniffer and ( cnfg.sniffer_vfpga_id == c_reg ) ) %}
@@ -1107,6 +1137,10 @@ module design_user_wrapper_{{ c_reg }} (
     {% if cnfg.en_tcp %}
         .axis_tcp_recv(axis_tcp_recv_int),
         .axis_tcp_send(axis_tcp_send_int),
+    {% endif %}
+    {% if ( cnfg.en_rf and ( cnfg.rf_vfpga_id == c_reg ) ) %}
+        .axis_rf_recv(axis_rf_recv),
+        .axis_rf_send(axis_rf_send),
     {% endif %}
     {% if ( cnfg.en_sniffer and ( cnfg.sniffer_vfpga_id == c_reg ) ) %}
         .axis_rx_sniffer(rx_sniffer),

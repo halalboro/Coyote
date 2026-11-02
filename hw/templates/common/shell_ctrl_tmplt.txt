@@ -42,6 +42,7 @@ module shell_ctrl_cc (
     AXI4L.m             axi_ctrl [N_REGIONS],
 {% if cnfg.en_rf %}
     AXI4L.m             axi_rf,
+    AXI4L.m             axi_rf_cnfg,
 {% endif %}
 {% if cnfg.en_avx %}
     AXI4.m              axim_ctrl [N_REGIONS],
@@ -131,6 +132,25 @@ design_ctrl inst_design_ctrl (
     .axi_rf_wready(axi_rf.wready),
     .axi_rf_wstrb(axi_rf.wstrb),
     .axi_rf_wvalid(axi_rf.wvalid),
+    .axi_rf_cnfg_araddr(axi_rf_cnfg.araddr),
+    .axi_rf_cnfg_arprot(axi_rf_cnfg.arprot),
+    .axi_rf_cnfg_arready(axi_rf_cnfg.arready),
+    .axi_rf_cnfg_arvalid(axi_rf_cnfg.arvalid),
+    .axi_rf_cnfg_awaddr(axi_rf_cnfg.awaddr),
+    .axi_rf_cnfg_awprot(axi_rf_cnfg.awprot),
+    .axi_rf_cnfg_awready(axi_rf_cnfg.awready),
+    .axi_rf_cnfg_awvalid(axi_rf_cnfg.awvalid),
+    .axi_rf_cnfg_bready(axi_rf_cnfg.bready),
+    .axi_rf_cnfg_bresp(axi_rf_cnfg.bresp),
+    .axi_rf_cnfg_bvalid(axi_rf_cnfg.bvalid),
+    .axi_rf_cnfg_rdata(axi_rf_cnfg.rdata),
+    .axi_rf_cnfg_rready(axi_rf_cnfg.rready),
+    .axi_rf_cnfg_rresp(axi_rf_cnfg.rresp),
+    .axi_rf_cnfg_rvalid(axi_rf_cnfg.rvalid),
+    .axi_rf_cnfg_wdata(axi_rf_cnfg.wdata),
+    .axi_rf_cnfg_wready(axi_rf_cnfg.wready),
+    .axi_rf_cnfg_wstrb(axi_rf_cnfg.wstrb),
+    .axi_rf_cnfg_wvalid(axi_rf_cnfg.wvalid),
 {% endif %}
     .axi_cnfg_araddr(axi_cnfg.araddr),
     .axi_cnfg_arprot(axi_cnfg.arprot),

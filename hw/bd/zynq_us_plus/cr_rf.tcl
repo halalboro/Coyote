@@ -58,6 +58,16 @@ proc cr_bd_design_rf { parentCell } {
   create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:diff_analog_io_rtl:1.0 vin20
   create_bd_intf_port -mode Master -vlnv xilinx.com:interface:diff_analog_io_rtl:1.0 vout20
 
+  # Converter streams and clocks
+  set m_axis_adc [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:axis_rtl:1.0 m_axis_adc ]
+  set_property -dict [ list CONFIG.TDATA_NUM_BYTES {16} CONFIG.FREQ_HZ {307200000} ] $m_axis_adc
+  set s_axis_dac [ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:axis_rtl:1.0 s_axis_dac ]
+  set_property -dict [ list CONFIG.TDATA_NUM_BYTES {16} CONFIG.HAS_TREADY {1} CONFIG.HAS_TKEEP {0} CONFIG.HAS_TLAST {0} CONFIG.HAS_TSTRB {0} CONFIG.TUSER_WIDTH {0} CONFIG.TID_WIDTH {0} CONFIG.TDEST_WIDTH {0} CONFIG.FREQ_HZ {307200000} ] $s_axis_dac
+  set clk_adc2 [ create_bd_port -dir O -type clk clk_adc2 ]
+  set_property -dict [ list CONFIG.ASSOCIATED_BUSIF {m_axis_adc} CONFIG.FREQ_HZ {307200000} ] $clk_adc2
+  set clk_dac2 [ create_bd_port -dir O -type clk clk_dac2 ]
+  set_property -dict [ list CONFIG.ASSOCIATED_BUSIF {s_axis_dac} CONFIG.FREQ_HZ {307200000} ] $clk_dac2
+
   # Converter
   set rfdc [ create_bd_cell -type ip -vlnv xilinx.com:ip:usp_rf_data_converter:2.6 rfdc ]
   set_property -dict [ list \
@@ -92,13 +102,6 @@ proc cr_bd_design_rf { parentCell } {
   create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_adc2
   create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_dac2
 
-  # DAC data tied to zero, ADC data discarded
-  set dac_zero [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 dac_zero ]
-  set_property -dict [ list CONFIG.CONST_WIDTH {128} CONFIG.CONST_VAL {0} ] $dac_zero
-  set dac_invalid [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 dac_invalid ]
-  set_property -dict [ list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {0} ] $dac_invalid
-  set adc_ready [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 adc_ready ]
-  set_property -dict [ list CONFIG.CONST_WIDTH {1} CONFIG.CONST_VAL {1} ] $adc_ready
 
   # Interfaces
   connect_bd_intf_net [get_bd_intf_ports axi_rf] [get_bd_intf_pins rfdc/s_axi]
@@ -115,11 +118,11 @@ proc cr_bd_design_rf { parentCell } {
   connect_bd_net [get_bd_pins rfdc/clk_dac2] [get_bd_pins rfdc/s2_axis_aclk] [get_bd_pins rst_dac2/slowest_sync_clk]
   connect_bd_net [get_bd_pins rst_adc2/peripheral_aresetn] [get_bd_pins rfdc/m2_axis_aresetn]
   connect_bd_net [get_bd_pins rst_dac2/peripheral_aresetn] [get_bd_pins rfdc/s2_axis_aresetn]
-
-  # Data
-  connect_bd_net [get_bd_pins dac_zero/dout] [get_bd_pins rfdc/s20_axis_tdata]
-  connect_bd_net [get_bd_pins dac_invalid/dout] [get_bd_pins rfdc/s20_axis_tvalid]
-  connect_bd_net [get_bd_pins adc_ready/dout] [get_bd_pins rfdc/m20_axis_tready]
+  # Converter streams and their clocks, to rf_service in the shell
+  connect_bd_intf_net [get_bd_intf_ports m_axis_adc] [get_bd_intf_pins rfdc/m20_axis]
+  connect_bd_intf_net [get_bd_intf_ports s_axis_dac] [get_bd_intf_pins rfdc/s20_axis]
+  connect_bd_net [get_bd_pins rfdc/clk_adc2] [get_bd_ports clk_adc2]
+  connect_bd_net [get_bd_pins rfdc/clk_dac2] [get_bd_ports clk_dac2]
 
   assign_bd_address -offset 0x00000000 -range 256K -target_address_space [get_bd_addr_spaces /axi_rf] [get_bd_addr_segs rfdc/s_axi/Reg]
 

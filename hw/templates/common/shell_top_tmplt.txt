@@ -471,6 +471,9 @@ module shell_top (
     AXI4L axi_cnfg ();
     {% if cnfg.en_rf %}
     AXI4L #(.AXI4L_DATA_BITS(32)) axi_rf ();
+    AXI4L #(.AXI4L_DATA_BITS(32)) axi_rf_cnfg ();
+    AXI4S axis_rf_adc ();
+    AXI4S axis_rf_dac ();
     {% endif %}
     AXI4L axi_ctrl [N_REGIONS] ();
     AXI4 #(.AXI4_DATA_BITS(AVX_DATA_BITS)) axim_ctrl [N_REGIONS] ();
@@ -500,6 +503,7 @@ module shell_top (
         .axi_cnfg(axi_cnfg),
         {% if cnfg.en_rf %}
         .axi_rf(axi_rf),
+        .axi_rf_cnfg(axi_rf_cnfg),
         {% endif %}
         .axi_ctrl(axi_ctrl){% if cnfg.en_avx %},
         .axim_ctrl(axim_ctrl)
@@ -932,28 +936,16 @@ module shell_top (
 {% endif %}
 		
 {% endif %}
-{% if cnfg.en_card %}
-    // ================-----------------------------------------------------------------
-    // MEMORY STACK
-    // ================-----------------------------------------------------------------
-    
-    AXI4 #(.AXI4_DATA_BITS(AXI_DDR_BITS)) axi_mem [N_MEM_CHAN] ();
-	
-{% if cnfg.en_tcp and cnfg.en_rdma %}
-    axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_tcp),  .m_axi(axi_mem[0]));
-    axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_rdma), .m_axi(axi_mem[1]));
-    
-{% elif cnfg.en_tcp %}
-    axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_tcp), .m_axi(axi_mem[0]));
-    
-{% elif cnfg.en_rdma %}
-    axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_rdma), .m_axi(axi_mem[0]));
-
-{% endif %}
 {% if cnfg.en_rf %}
     // ================-----------------------------------------------------------------
     // RF data converter
     // ================-----------------------------------------------------------------
+
+    logic         rf_adc_clk, rf_dac_clk;
+    logic [127:0] rf_adc_tdata, rf_dac_tdata;
+    logic         rf_adc_tvalid, rf_adc_tready, rf_dac_tvalid, rf_dac_tready;
+    AXI4S axis_rf_adc_s0 ();
+    AXI4S axis_rf_dac_s0 ();
 
     design_rf inst_design_rf (
         .aclk(aclk),
@@ -984,8 +976,55 @@ module shell_top (
         .vin20_v_p(vin20_p),
         .vin20_v_n(vin20_n),
         .vout20_v_p(vout20_p),
-        .vout20_v_n(vout20_n)
+        .vout20_v_n(vout20_n),
+        .clk_adc2(rf_adc_clk),
+        .clk_dac2(rf_dac_clk),
+        .m_axis_adc_tdata(rf_adc_tdata),
+        .m_axis_adc_tvalid(rf_adc_tvalid),
+        .m_axis_adc_tready(rf_adc_tready),
+        .s_axis_dac_tdata(rf_dac_tdata),
+        .s_axis_dac_tvalid(rf_dac_tvalid),
+        .s_axis_dac_tready(rf_dac_tready)
     );
+
+    rf_service inst_rf_service (
+        .aclk(aclk),
+        .aresetn(aresetn),
+        .s_axi_cnfg(axi_rf_cnfg),
+        .vclk({% if cnfg.en_uclk %}uclk{% else %}aclk{% endif %}),
+        .m_axis_adc(axis_rf_adc_s0),
+        .s_axis_dac(axis_rf_dac_s0),
+        .adc_clk(rf_adc_clk),
+        .adc_tdata(rf_adc_tdata),
+        .adc_tvalid(rf_adc_tvalid),
+        .adc_tready(rf_adc_tready),
+        .dac_clk(rf_dac_clk),
+        .dac_tdata(rf_dac_tdata),
+        .dac_tvalid(rf_dac_tvalid),
+        .dac_tready(rf_dac_tready)
+    );
+
+    // Registers between the service, next to the converters, and the vFPGA
+    axis_reg_array #(.N_STAGES(2)) inst_rf_adc_reg (.aclk({% if cnfg.en_uclk %}uclk{% else %}aclk{% endif %}), .aresetn({% if cnfg.en_uclk %}uresetn{% else %}aresetn{% endif %}), .s_axis(axis_rf_adc_s0), .m_axis(axis_rf_adc));
+    axis_reg_array #(.N_STAGES(2)) inst_rf_dac_reg (.aclk({% if cnfg.en_uclk %}uclk{% else %}aclk{% endif %}), .aresetn({% if cnfg.en_uclk %}uresetn{% else %}aresetn{% endif %}), .s_axis(axis_rf_dac), .m_axis(axis_rf_dac_s0));
+
+{% endif %}
+{% if cnfg.en_card %}
+    // ================-----------------------------------------------------------------
+    // MEMORY STACK
+    // ================-----------------------------------------------------------------
+    
+    AXI4 #(.AXI4_DATA_BITS(AXI_DDR_BITS)) axi_mem [N_MEM_CHAN] ();
+	
+{% if cnfg.en_tcp and cnfg.en_rdma %}
+    axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_tcp),  .m_axi(axi_mem[0]));
+    axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_rdma), .m_axi(axi_mem[1]));
+    
+{% elif cnfg.en_tcp %}
+    axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_tcp), .m_axi(axi_mem[0]));
+    
+{% elif cnfg.en_rdma %}
+    axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_rdma), .m_axi(axi_mem[0]));
 
 {% endif %}
 {% if cnfg.en_dcard %}
@@ -1664,6 +1703,10 @@ module shell_top (
         .s_rx_sniffer(rx_sniffer),
         .s_tx_sniffer(tx_sniffer),
         .m_filter_config(filter_config),
+{% endif %}
+{% if cnfg.en_rf %}
+        .s_axis_rf(axis_rf_adc),
+        .m_axis_rf(axis_rf_dac),
 {% endif %}
 {% if cnfg.en_wb %}
         .m_wback(wback),
