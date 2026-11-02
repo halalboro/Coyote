@@ -94,6 +94,12 @@ if {$cfg(en_shell_pblock) eq 1} {
 } else {
     link_design -mode default -part $part -top cyt_top
 }
+# The RF pins go straight to the converter's hard block, which needs no IO buffer; the ports only keep io_buffer_type=none
+# so that synthesis of the top level, where the shell is a black box, doesn't insert one. Left set, it fails DRC RPBF-1
+if {$cfg(en_rf) eq 1} {
+    reset_property IO_BUFFER_TYPE [get_ports {adc2_clk_* dac2_clk_* sysref_in_* vin20_* vout20_*}]
+}
+
 write_checkpoint -force "$dcp_dir/shell_linked.dcp"
 
 #########################################################################################################

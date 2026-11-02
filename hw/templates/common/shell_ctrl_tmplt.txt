@@ -40,6 +40,9 @@ module shell_ctrl_cc (
 
     AXI4L.m             axi_cnfg,
     AXI4L.m             axi_ctrl [N_REGIONS],
+{% if cnfg.en_rf %}
+    AXI4L.m             axi_rf,
+{% endif %}
 {% if cnfg.en_avx %}
     AXI4.m              axim_ctrl [N_REGIONS],
 {% endif %}
@@ -108,6 +111,27 @@ design_ctrl inst_design_ctrl (
     .axi_main_wstrb(axi_main.wstrb),
     .axi_main_wvalid(axi_main.wvalid),
     
+{% if cnfg.en_rf %}
+    .axi_rf_araddr(axi_rf.araddr),
+    .axi_rf_arprot(axi_rf.arprot),
+    .axi_rf_arready(axi_rf.arready),
+    .axi_rf_arvalid(axi_rf.arvalid),
+    .axi_rf_awaddr(axi_rf.awaddr),
+    .axi_rf_awprot(axi_rf.awprot),
+    .axi_rf_awready(axi_rf.awready),
+    .axi_rf_awvalid(axi_rf.awvalid),
+    .axi_rf_bready(axi_rf.bready),
+    .axi_rf_bresp(axi_rf.bresp),
+    .axi_rf_bvalid(axi_rf.bvalid),
+    .axi_rf_rdata(axi_rf.rdata),
+    .axi_rf_rready(axi_rf.rready),
+    .axi_rf_rresp(axi_rf.rresp),
+    .axi_rf_rvalid(axi_rf.rvalid),
+    .axi_rf_wdata(axi_rf.wdata),
+    .axi_rf_wready(axi_rf.wready),
+    .axi_rf_wstrb(axi_rf.wstrb),
+    .axi_rf_wvalid(axi_rf.wvalid),
+{% endif %}
     .axi_cnfg_araddr(axi_cnfg.araddr),
     .axi_cnfg_arprot(axi_cnfg.arprot),
     .axi_cnfg_arready(axi_cnfg.arready),

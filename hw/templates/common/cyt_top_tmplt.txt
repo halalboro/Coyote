@@ -103,6 +103,20 @@ module cyt_top (
     (* io_buffer_type = "none" *) input  wire                 c1_sys_clk_p,
     (* io_buffer_type = "none" *) input  wire                 c1_sys_clk_n,
     {% endif %}
+    {% if cnfg.en_rf %}
+    // RF data converter (dedicated pins)
+    (* io_buffer_type = "none" *) input  wire              adc2_clk_p,
+    (* io_buffer_type = "none" *) input  wire              adc2_clk_n,
+    (* io_buffer_type = "none" *) input  wire              dac2_clk_p,
+    (* io_buffer_type = "none" *) input  wire              dac2_clk_n,
+    (* io_buffer_type = "none" *) input  wire              sysref_in_p,
+    (* io_buffer_type = "none" *) input  wire              sysref_in_n,
+    (* io_buffer_type = "none" *) input  wire              vin20_p,
+    (* io_buffer_type = "none" *) input  wire              vin20_n,
+    (* io_buffer_type = "none" *) output wire              vout20_p,
+    (* io_buffer_type = "none" *) output wire              vout20_n{% if cnfg.ddr_0 %},{% endif %}
+
+    {% endif %}
     {% if cnfg.fdev == 'zcu216' and cnfg.ddr_0 %}
     // DDR4 C0 (PL side)
     (* io_buffer_type = "none" *) output wire              c0_ddr4_act_n,
@@ -598,6 +612,18 @@ module cyt_top (
         .c1_ddr4_reset_n(c1_ddr4_reset_n),
         .c1_sys_clk_p(c1_sys_clk_p),
         .c1_sys_clk_n(c1_sys_clk_n),
+    {% endif %}
+    {% if cnfg.en_rf %}
+        .adc2_clk_p(adc2_clk_p),
+        .adc2_clk_n(adc2_clk_n),
+        .dac2_clk_p(dac2_clk_p),
+        .dac2_clk_n(dac2_clk_n),
+        .sysref_in_p(sysref_in_p),
+        .sysref_in_n(sysref_in_n),
+        .vin20_p(vin20_p),
+        .vin20_n(vin20_n),
+        .vout20_p(vout20_p),
+        .vout20_n(vout20_n),
     {% endif %}
     {% if cnfg.fdev == 'zcu216' and cnfg.ddr_0 %}
         .c0_ddr4_act_n(c0_ddr4_act_n),

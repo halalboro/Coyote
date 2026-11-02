@@ -78,6 +78,16 @@ proc cr_bd_design_ctrl { parentCell } {
     eval $cmd
   }
 
+  # RF data converter control
+  if {$cnfg(en_rf) eq 1} {
+    set axi_rf [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 axi_rf ]
+    set_property -dict [ list \
+      CONFIG.ADDR_WIDTH {64} \
+      CONFIG.DATA_WIDTH {32} \
+      CONFIG.PROTOCOL {AXI4LITE} \
+    ] $axi_rf
+  }
+
   # AVX control
   if {$cnfg(en_avx) eq 1} {
     for {set i 0}  {$i < $cnfg(n_reg)} {incr i} {    
@@ -134,6 +144,9 @@ proc cr_bd_design_ctrl { parentCell } {
                     append cmd ":axim_ctrl_$i"
                 }
             }
+            if {$cnfg(en_rf) eq 1} {
+                append cmd ":axi_rf"
+            }
             append cmd "} \
               CONFIG.ASSOCIATED_RESET {aresetn} \
   ] \$aclk"
@@ -177,6 +190,12 @@ set_property CONFIG.POLARITY ACTIVE_HIGH [get_bd_ports sys_reset]
     set ic0_mi [expr {$cnfg(n_reg) + 1}]
   }
 
+  # The RF data converter takes the last master port
+  set rf_mi $ic0_mi
+  if {$cnfg(en_rf) eq 1} {
+    incr ic0_mi
+  }
+
   set cmd "set axi_interconnect_0 \[ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 axi_interconnect_0 ]
           set_property -dict \[ list \
           CONFIG.S00_HAS_REGSLICE {4} \
@@ -191,6 +210,9 @@ set_property CONFIG.POLARITY ACTIVE_HIGH [get_bd_ports sys_reset]
     for {set i 0} {$i <= $cnfg(n_reg)} {incr i} {
       append cmd [format " CONFIG.M%02d_HAS_REGSLICE {4}"  $i]
     }
+  }
+  if {$cnfg(en_rf) eq 1} {
+    append cmd [format " CONFIG.M%02d_HAS_REGSLICE {4}"  $rf_mi]
   }
   append cmd "] \$axi_interconnect_0"
   eval $cmd
@@ -255,6 +277,11 @@ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_u
     }
   }
 
+  # RF data converter control
+  if {$cnfg(en_rf) eq 1} {
+    connect_bd_intf_net [get_bd_intf_ports axi_rf] [get_bd_intf_pins axi_interconnect_0/[format "M%02d_AXI" $rf_mi]]
+  }
+
 ########################################################################################################
 # Create port connections
 ########################################################################################################
@@ -290,6 +317,11 @@ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_u
     }
   }
 
+  if {$cnfg(en_rf) eq 1} {
+    append cmd_clk [format " \[get_bd_pins axi_interconnect_0/M%02d_ACLK]" $rf_mi]
+    append cmd_rst [format " \[get_bd_pins axi_interconnect_0/M%02d_ARESETN]" $rf_mi]
+  }
+
   eval $cmd_clk
   eval $cmd_rst
  
@@ -313,6 +345,11 @@ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_u
       set cmd [format "create_bd_addr_seg -range 0x00040000 -offset 0x000%02x0000 \[get_bd_addr_spaces /axi_main] \[get_bd_addr_segs axi_ctrl_$i/Reg] SEG_axi_ctrl_$i\_Reg" [expr {0x10 + $i *4}]]
       eval $cmd
     }
+  }
+
+  # RF data converter, in the shell's address space
+  if {$cnfg(en_rf) eq 1} {
+    create_bd_addr_seg -range 0x00040000 -offset 0x08000000 [get_bd_addr_spaces /axi_main] [get_bd_addr_segs axi_rf/Reg] SEG_axi_rf_Reg
   }
 
   save_bd_design

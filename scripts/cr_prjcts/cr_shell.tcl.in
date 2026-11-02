@@ -156,6 +156,12 @@ if {$cfg(en_dcard) eq 1} {
     set_property SYNTH_CHECKPOINT_MODE "Hierarchical" [get_files design_ddr.bd ]
 }
 
+if {$cfg(en_rf) eq 1} {
+    source "$hw_dir/bd/zynq_us_plus/cr_rf.tcl" -notrace
+    cr_bd_design_rf ""
+    set_property SYNTH_CHECKPOINT_MODE "Hierarchical" [get_files design_rf.bd ]
+}
+
 if {$cfg(en_hcard) eq 1} {
     if {$cfg(hbm_split) eq 1} {
       source "$hw_dir/bd/$cfg(fpga_arch)/cr_hbm_split.tcl" -notrace 

@@ -198,6 +198,9 @@ set(EN_UCLK 0 CACHE STRING "User clock crossing (300 MHz by default)")
 # Target user logic clock crossing, if EN_UCLK=1
 set(UCLK_F 250 CACHE STRING "User clock frequency")
 
+# RF data converter (experimental, zcu216 only): one RF-ADC and one RF-DAC in the shell, no data path yet
+set(EN_RF 0 CACHE STRING "RF data converter")
+
 # Static layer clock frequency; only applicable to Versal devices,
 # since it can be dynamically generated from the CIPS
 # On UltraScale+ devices, it is always 250 MHz
@@ -507,6 +510,10 @@ macro(validation_checks_hw)
                 message("** AVX instructions not available on the ARM host of ${FDEV_NAME}. Force disable.")
                 set(EN_AVX 0)
             endif()
+        endif()
+
+        if(EN_RF AND NOT (FDEV_NAME STREQUAL "zcu216"))
+            message(FATAL_ERROR "${FDEV_NAME}: the RF data converter (EN_RF=1) is only supported on the zcu216.")
         endif()
 
         # Three host channels: streaming data host <-> vFPGA, migration channel (sync/offload), and, PR & WB channel

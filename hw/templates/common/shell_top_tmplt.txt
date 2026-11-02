@@ -187,6 +187,19 @@ module shell_top (
     (* io_buffer_type = "none" *) input  logic                              c1_sys_clk_p,
     (* io_buffer_type = "none" *) input  logic                              c1_sys_clk_n,
     {% endif %}
+    {% if cnfg.en_rf %}
+    // RF data converter (dedicated pins)
+    (* io_buffer_type = "none" *) input  logic                                   adc2_clk_p,
+    (* io_buffer_type = "none" *) input  logic                                   adc2_clk_n,
+    (* io_buffer_type = "none" *) input  logic                                   dac2_clk_p,
+    (* io_buffer_type = "none" *) input  logic                                   dac2_clk_n,
+    (* io_buffer_type = "none" *) input  logic                                   sysref_in_p,
+    (* io_buffer_type = "none" *) input  logic                                   sysref_in_n,
+    (* io_buffer_type = "none" *) input  logic                                   vin20_p,
+    (* io_buffer_type = "none" *) input  logic                                   vin20_n,
+    (* io_buffer_type = "none" *) output logic                                   vout20_p,
+    (* io_buffer_type = "none" *) output logic                                   vout20_n,
+    {% endif %}
     {% if cnfg.fdev == 'zcu216' and cnfg.ddr_0 %}
     // DDR4 C0 (PL side)
     (* io_buffer_type = "none" *) output logic                                   c0_ddr4_act_n,
@@ -456,6 +469,9 @@ module shell_top (
     AXI4 s_axi_main();
     `AXI_ASSIGN_S2I(s_axi_main, s_axi_main)    
     AXI4L axi_cnfg ();
+    {% if cnfg.en_rf %}
+    AXI4L #(.AXI4L_DATA_BITS(32)) axi_rf ();
+    {% endif %}
     AXI4L axi_ctrl [N_REGIONS] ();
     AXI4 #(.AXI4_DATA_BITS(AVX_DATA_BITS)) axim_ctrl [N_REGIONS] ();
     
@@ -482,6 +498,9 @@ module shell_top (
 
         .axi_main(s_axi_main),
         .axi_cnfg(axi_cnfg),
+        {% if cnfg.en_rf %}
+        .axi_rf(axi_rf),
+        {% endif %}
         .axi_ctrl(axi_ctrl){% if cnfg.en_avx %},
         .axim_ctrl(axim_ctrl)
         {% endif %}
@@ -929,6 +948,44 @@ module shell_top (
     
 {% elif cnfg.en_rdma %}
     axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_rdma), .m_axi(axi_mem[0]));
+
+{% endif %}
+{% if cnfg.en_rf %}
+    // ================-----------------------------------------------------------------
+    // RF data converter
+    // ================-----------------------------------------------------------------
+
+    design_rf inst_design_rf (
+        .aclk(aclk),
+        .aresetn(aresetn),
+        .axi_rf_araddr(axi_rf.araddr[17:0]),
+        .axi_rf_arready(axi_rf.arready),
+        .axi_rf_arvalid(axi_rf.arvalid),
+        .axi_rf_awaddr(axi_rf.awaddr[17:0]),
+        .axi_rf_awready(axi_rf.awready),
+        .axi_rf_awvalid(axi_rf.awvalid),
+        .axi_rf_bready(axi_rf.bready),
+        .axi_rf_bresp(axi_rf.bresp),
+        .axi_rf_bvalid(axi_rf.bvalid),
+        .axi_rf_rdata(axi_rf.rdata),
+        .axi_rf_rready(axi_rf.rready),
+        .axi_rf_rresp(axi_rf.rresp),
+        .axi_rf_rvalid(axi_rf.rvalid),
+        .axi_rf_wdata(axi_rf.wdata),
+        .axi_rf_wready(axi_rf.wready),
+        .axi_rf_wstrb(axi_rf.wstrb),
+        .axi_rf_wvalid(axi_rf.wvalid),
+        .adc2_clk_clk_p(adc2_clk_p),
+        .adc2_clk_clk_n(adc2_clk_n),
+        .dac2_clk_clk_p(dac2_clk_p),
+        .dac2_clk_clk_n(dac2_clk_n),
+        .sysref_in_diff_p(sysref_in_p),
+        .sysref_in_diff_n(sysref_in_n),
+        .vin20_v_p(vin20_p),
+        .vin20_v_n(vin20_n),
+        .vout20_v_p(vout20_p),
+        .vout20_v_n(vout20_n)
+    );
 
 {% endif %}
 {% if cnfg.en_dcard %}
