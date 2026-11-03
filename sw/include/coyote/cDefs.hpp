@@ -270,6 +270,7 @@ constexpr unsigned long const MMAP_WB = 0x0 << PAGE_SHIFT;
 constexpr unsigned long const MMAP_CNFG = 0x1 << PAGE_SHIFT;
 constexpr unsigned long const MMAP_CNFG_AVX = 0x2 << PAGE_SHIFT;
 constexpr unsigned long const MMAP_CTRL = 0x3 << PAGE_SHIFT;
+constexpr unsigned long const MMAP_RF = 0x4 << PAGE_SHIFT;
 constexpr unsigned long const MMAP_RECONFIG = 0x100 << PAGE_SHIFT;
 
 // Writeback region constants; there are deidcated writebacks for reads, writes, remote reads and remote writes

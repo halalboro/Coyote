@@ -10,7 +10,7 @@ the host is the on-chip ARM processing system (PS). Since the programmable logic
 (including the MMU, vFPGAs and user logic) are shared with the Alveo cards; only the static layer, the driver platform layer
 and a few build options differ.
 
-.. warning:: Support for the ZCU216 is experimental. It has been validated on hardware (PYNQ 2.7, Linux 5.4) with Examples 1, 2, 3, 4, 7 and 8. Host streams and card memory (both PL DDR4 channels, 8 GB) are supported.
+.. warning:: Support for the ZCU216 is experimental. It has been validated on hardware (PYNQ 2.7, Linux 5.4) with Examples 1, 2, 3, 4, 7, 8 and 13. Host streams, card memory (both PL DDR4 channels, 8 GB) and ADC capture are supported.
 
 Architecture
 ------------------------------------------
@@ -95,6 +95,7 @@ Example                      Status
 9 RDMA                       ❌
 10 vFPGA reconfiguration     ❌
 11 Traffic sniffer           ❌
+13 RF capture                ✅ (ZCU216 only; ADC to card memory)
 ============================ ==============================================
 
 Card memory
@@ -115,32 +116,34 @@ stripes over DDR channels, not only the ZCU216.
 
 RF data converters
 ------------------
-This part is experimental: control and clocks have been tested on a board, and the data path has only been simulated and built.
-No samples have been captured and no DAC has been driven with data. ``-DEN_RF=1`` adds the RF data converter to the shell; the default is off, and images built without it
+This part is experimental: ADC capture has been tested on a board, but only with an internal test pattern and with no signal on the input.
+No known signal has been captured, the DAC stream has only been simulated, and no DAC has been driven with data. ``-DEN_RF=1`` adds the RF data converter to the shell; the default is off, and images built without it
 never touch the converters or the clock chips. Do not load such an image, program the clock chips or enable a DAC before
 checking what is connected to the RF outputs.
 
 **The DAC tile starts by itself:** if its reference clock is already running when an image with the converter is loaded, the
 tile goes to its running state (state 15) without any software command. Clocks stay programmed across image loads, so this
-is the normal case after the first load. Shut the tile down right after loading if the DAC has to stay off.
+is the normal case after the first load. The Coyote driver therefore shuts it down when it loads on an image with the converter, so the
+tile runs only between the bitstream load and ``insmod``. An image with the converter must not be loaded with a driver older than this,
+or with one built from a shell that does not report the converter (bit 15 of the shell's memory configuration register).
 
 The build has one ADC (tile 2, block 0, package pins AJ5/AJ4) and one DAC (tile 2, block 0, package pins M5/M4), both sampling
 at 2.4576 GS/s from a 245.76 MHz reference clock on BA5/BB5 (ADC) and B5/A5 (DAC), with SYSREF on D2/D1. These clock settings
 follow QICK's public ZCU216 design. The configuration is in ``hw/bd/zynq_us_plus/cr_rf.tcl``. The converter's control registers
-are at ``0xA800_0000`` (256 KB), reached through the shell's control interconnect. Coyote's own software has no RF support yet.
+are at ``0xA800_0000`` (256 KB), reached through the shell's control interconnect.
 A DAC with zero data is not necessarily silent: once it is running, its output can still carry bias and clock leakage.
 
 The converters connect to one vFPGA, chosen with ``-DRF_VFPGA_ID`` (default 0), through two 512-bit streams on the vFPGA clock:
 ``axis_rf_recv`` carries ADC samples and ``axis_rf_send`` carries DAC samples. Each converter delivers 8 16-bit samples per
-307.2 MHz clock (4.9 GB/s). The vFPGA has to handle both streams, or the build fails in ``opt_design``; ``examples/13_rf_capture`` shows
-the minimum, discarding ADC data and tying the DAC stream off. The logic is in ``hw/hdl/rf`` (testbench in ``sim/rf``). Both directions are
+307.2 MHz clock (4.9 GB/s). The vFPGA has to handle both streams, or the build fails in ``opt_design``; ``examples/13_rf_capture`` captures ADC data to
+card memory and ties the DAC stream off. The logic is in ``hw/hdl/rf`` (testbench in ``sim/rf``). Both directions are
 off after reset and are enabled through these registers, at ``0xA804_0000``:
 
 ====== ===================================================================
 Offset Register
 ====== ===================================================================
 0x00   ID, reads ``0x52460001``
-0x04   Bit 0 enables the ADC stream, bit 1 the DAC stream
+0x04   Bit 0 enables the ADC stream, bit 1 the DAC stream, bit 2 replaces ADC samples with a counter (change it while the stream is disabled)
 0x08   Bit 0 ADC overflow, bit 1 DAC underflow; sticky until disabled
 0x0C   Number of 512-bit words taken from the ADC since it was enabled
 0x10   Number of 512-bit words sent to the DAC since it was enabled
@@ -156,7 +159,17 @@ RPBF-1. The pins are dedicated, so they have no constraints file.
 On the board, PYNQ's ``xrfdc`` driver works with this IP version (2.6) when given the parameters from the ``design_rf`` ``.hwh``
 and ``XILINX_XRT=/usr`` and ``BOARD=ZCU216`` in the environment. ``xrfclk.set_ref_clks(lmk_freq=245.76, lmx_freq=491.52)``, the
 settings QICK uses, brings ADC tile 2 to state 15 with its PLL locked. The DAC tile's lock has not been checked with these
-clock settings, because the tile was kept off.
+clock settings, because the tile was kept off. The clock chips are not yet programmed from Coyote's software, so ``xrfclk`` is still needed once after every power cycle.
+
+The ``cRF`` class (``sw/include/coyote/cRF.hpp``) maps these registers and the converter's tile registers through the driver. It reads
+tile state and PLL lock, starts and shuts down the ADC tile, shuts down the DAC tile, and controls the ADC stream. It deliberately cannot start the DAC.
+On an image without the converter, the driver refuses the mapping and ``cRF`` throws.
+
+Example 13 captures up to 128 MB to card memory (``test -s <MB> -p <0|1> -o <file>``); ``-p 1`` uses the test pattern, whose samples are consecutive
+16-bit values generated on the ADC clock. On a board, 128 MB took 27.31 ms, against 27.31 ms of ADC data, with no broken samples and no overflow in 30 runs.
+The pattern starts in the ADC clock domain but after the converter, so it shows that no data is lost on the way to card memory, not that the converter or the sample
+order within a word is right; that needs a known signal. With nothing driving the input, samples are multiples of 4 (a 14-bit converter), with an RMS of about 25 and
+spurs at 614.4 and 1228.8 MHz, a quarter and half of the sampling rate.
 
 Future work includes shell and vFPGA reconfiguration (which requires a floorplan around the RF data converters,
-and handing the configuration port over from PCAP to ICAP), and a software API for the RF data converters.
+and handing the configuration port over from PCAP to ICAP), programming the clock chips from Coyote's software, and configurable converter channels and rates.

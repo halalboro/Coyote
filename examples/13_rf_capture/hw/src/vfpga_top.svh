@@ -34,16 +34,17 @@ perf_local inst_host_link (
     .aresetn    (aresetn)
 );
 
-// Data movement card memory => vFPGA => card memory
-perf_local inst_card_link (
-    .axis_in    (axis_card_recv[0]),
-    .axis_out   (axis_card_send[0]),
+// ADC stream => card memory, controlled through axi_ctrl
+rf_capture inst_capture (
     .aclk       (aclk),
-    .aresetn    (aresetn)
+    .aresetn    (aresetn),
+    .axi_ctrl   (axi_ctrl),
+    .axis_rf    (axis_rf_recv),
+    .axis_card  (axis_card_send[0])
 );
 
-// RF data converter service: for now, the ADC stream is discarded and nothing is sent to the DAC
-always_comb axis_rf_recv.tready = 1'b1;
+// Nothing reads card memory through this vFPGA (LOCAL_SYNC does not pass through it), and nothing is sent to the DAC
+always_comb axis_card_recv[0].tie_off_s();
 always_comb axis_rf_send.tie_off_m();
 
 // Tie-off unused signals to avoid synthesis problems
@@ -52,4 +53,3 @@ always_comb sq_rd.tie_off_m();
 always_comb sq_wr.tie_off_m();
 always_comb cq_rd.tie_off_s();
 always_comb cq_wr.tie_off_s();
-always_comb axi_ctrl.tie_off_s();

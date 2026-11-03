@@ -25,6 +25,7 @@ module rf_adc_stream #(
     // Control clock
     input  logic                        aclk,
     input  logic                        enable,
+    input  logic                        test,
     output logic                        overflow,
     output logic [31:0]                 word_count
 );
@@ -34,6 +35,21 @@ xpm_cdc_single #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(1), .SRC_INPUT_REG(1)) inst_en_
 xpm_cdc_single #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(1), .SRC_INPUT_REG(1)) inst_en_v  (.src_clk(aclk), .src_in(enable), .dest_clk(vclk),   .dest_out(en_v));
 
 assign rf_tready = 1'b1;
+
+// Test pattern: consecutive 16-bit values, so a capture can be checked for lost or reordered samples
+logic en_test;
+xpm_cdc_single #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(1), .SRC_INPUT_REG(1)) inst_test (.src_clk(aclk), .src_in(test), .dest_clk(rf_clk), .dest_out(en_test));
+
+logic [12:0]  pattern = '0;
+logic [127:0] rf_word;
+always_comb begin
+    rf_word = rf_tdata;
+    if (en_test) for (int i = 0; i < 8; i++) rf_word[i*16 +: 16] = {pattern, 3'(i)};
+end
+always_ff @(posedge rf_clk) begin
+    if (!en_rf) pattern <= '0;
+    else if (rf_tvalid) pattern <= pattern + 1;
+end
 
 logic [1:0]               cnt = '0;
 logic [383:0]             hold;
@@ -52,7 +68,7 @@ always_ff @(posedge rf_clk) begin
     end else if (rf_tvalid) begin
         cnt <= cnt + 1;
         if (cnt == 2'd3) begin
-            wr_data <= {rf_tdata, hold};
+            wr_data <= {rf_word, hold};
             if (!full && !wr_rst_busy) begin
                 wr_en <= 1'b1;
                 count_rf <= count_rf + 1;
@@ -61,7 +77,7 @@ always_ff @(posedge rf_clk) begin
                 overflow_rf <= 1'b1;
             end
         end else begin
-            hold[cnt*128 +: 128] <= rf_tdata;
+            hold[cnt*128 +: 128] <= rf_word;
         end
     end
 end

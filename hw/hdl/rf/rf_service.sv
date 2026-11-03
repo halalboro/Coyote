@@ -27,19 +27,19 @@ module rf_service (
     input  logic         dac_tready
 );
 
-logic adc_enable, dac_enable, adc_overflow, dac_underflow;
+logic adc_enable, dac_enable, adc_test, adc_overflow, dac_underflow;
 logic [31:0] adc_words, dac_words;
 
 rf_slave inst_slave (
     .aclk(aclk), .aresetn(aresetn), .s_axi(s_axi_cnfg),
-    .adc_enable(adc_enable), .dac_enable(dac_enable), .adc_overflow(adc_overflow), .dac_underflow(dac_underflow),
+    .adc_enable(adc_enable), .dac_enable(dac_enable), .adc_test(adc_test), .adc_overflow(adc_overflow), .dac_underflow(dac_underflow),
     .adc_words(adc_words), .dac_words(dac_words)
 );
 
 rf_adc_stream inst_adc (
     .rf_clk(adc_clk), .rf_tdata(adc_tdata), .rf_tvalid(adc_tvalid), .rf_tready(adc_tready),
     .vclk(vclk), .m_axis(m_axis_adc),
-    .aclk(aclk), .enable(adc_enable), .overflow(adc_overflow), .word_count(adc_words)
+    .aclk(aclk), .enable(adc_enable), .test(adc_test), .overflow(adc_overflow), .word_count(adc_words)
 );
 
 rf_dac_stream inst_dac (

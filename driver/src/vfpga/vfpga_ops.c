@@ -675,6 +675,31 @@ int vfpga_dev_mmap(struct file *file, struct vm_area_struct *vma) {
         }
     }
 
+    #ifdef PLATFORM_ZYNQ
+    // Memory map the RF data converter registers; a shell without them would answer with a bus error
+    if (vma->vm_pgoff == MMAP_RF) {
+        if (!device->bd_data->en_rf) {
+            pr_warn("this shell has no RF data converters\n");
+            return -ENODEV;
+        }
+        if (vma_size != RF_WINDOW_SIZE) {
+            pr_warn("invalid mapping size %lx for region %d\n", vma_size, MMAP_RF);
+            return -EINVAL;
+        }
+        if (remap_pfn_range(
+            vma,
+            vma->vm_start,
+            (device->bd_data->bar_phys_addr[BAR_SHELL_CONFIG] + RF_CONV_OFFS) >> PAGE_SHIFT,
+            RF_WINDOW_SIZE,
+            vma->vm_page_prot
+        )) {
+            pr_warn("remap_pfn_range failed for the RF region\n");
+            return -EIO;
+        }
+        return 0;
+    }
+    #endif
+
     // Memory map vFPGA config (non-AVX) region (cnfg_slave)
     if (vma->vm_pgoff == MMAP_CNFG) {
         if (vma_size != VFPGA_CTRL_CNFG_SIZE) {

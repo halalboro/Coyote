@@ -104,6 +104,7 @@ int read_shell_config(struct bus_driver_data *data) {
 
     data->en_strm = (data->shell_cnfg->mem_cnfg & EN_STRM_MASK) >> EN_STRM_SHIFT; 
     data->en_mem = (data->shell_cnfg->mem_cnfg & EN_MEM_MASK) >> EN_MEM_SHIFT;
+    data->en_rf = (data->shell_cnfg->mem_cnfg & EN_RF_MASK) >> EN_RF_SHIFT;
     dbg_info("enabled host streams %d, enabled card streams (mem) %d\n", data->en_strm, data->en_mem);
 
     data->n_host_axi = (data->shell_cnfg->mem_cnfg & N_STRM_AXI_MASK) >> N_STRM_AXI_SHIFT;

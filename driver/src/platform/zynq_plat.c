@@ -223,6 +223,50 @@ void shell_pci_remove(struct bus_driver_data *bd_data) {
     dbg_info("shell removed\n");
 }
 
+/*
+ * Shuts the RF DAC tile down, so that a DAC only ever runs when software asks for it.
+ * The tile's state machine is left to finish its start-up first, at most about 200 ms.
+ */
+static void rf_dac_off(struct device *dev, struct bus_driver_data *bd_data) {
+    void __iomem *rf = ioremap(bd_data->bar_phys_addr[BAR_SHELL_CONFIG] + RF_CONV_OFFS, RF_CONV_SIZE);
+    void __iomem *tile;
+    u32 state;
+    int i;
+
+    if (!rf) {
+        dev_err(dev, "could not map the RF converter registers; the DAC tile may be running\n");
+        return;
+    }
+    tile = rf + RF_DAC_TILE_OFFS(RF_DAC_TILE);
+
+    for (i = 0; i < 200; i++) {
+        state = ioread32(tile + RF_TILE_CURRENT_STATE_OFFS);
+        if (state == RF_TILE_STATE_RUNNING || state == RF_TILE_STATE_OFF) {
+            break;
+        }
+        usleep_range(1000, 1100);
+    }
+
+    if (state != RF_TILE_STATE_OFF) {
+        iowrite32((RF_TILE_STATE_OFF << 8) | RF_TILE_STATE_OFF, tile + RF_TILE_RESTART_STATE_OFFS);
+        iowrite32(1, tile + RF_TILE_RESTART_OFFS);
+        for (i = 0; i < 200; i++) {
+            state = ioread32(tile + RF_TILE_CURRENT_STATE_OFFS);
+            if (state == RF_TILE_STATE_OFF) {
+                break;
+            }
+            usleep_range(1000, 1100);
+        }
+    }
+
+    if (state == RF_TILE_STATE_OFF) {
+        dev_info(dev, "RF DAC tile %d is off\n", RF_DAC_TILE);
+    } else {
+        dev_err(dev, "RF DAC tile %d did not shut down, state %u\n", RF_DAC_TILE, state);
+    }
+    iounmap(rf);
+}
+
 int zynq_probe(struct platform_device *pdev) {
     int ret_val = 0;
     dbg_info("probe (pdev = 0x%p)\n", pdev);
@@ -295,6 +339,11 @@ int zynq_probe(struct platform_device *pdev) {
     if(ret_val) {
         dev_err(&pdev->dev, "cannot read shell config\n");
         goto err_read_shell_cnfg;
+    }
+
+    // An image with RF converters starts the DAC tile by itself when its clock is running
+    if (bd_data->en_rf) {
+        rf_dac_off(&pdev->dev, bd_data);
     }
 
     // Create sysfs entry

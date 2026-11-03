@@ -389,6 +389,7 @@ package lynxTypes;
     localparam integer WB_FLOW = {{ cnfg.en_wb }};
     localparam integer STRM_FLOW = {{ cnfg.en_strm }};
     localparam integer MEM_FLOW = {{ cnfg.en_mem }};
+    localparam integer RF_FLOW = {{ cnfg.en_rf }};
     localparam integer RDMA_FLOW = {{ cnfg.en_rdma }};
     localparam integer TCP_FLOW = {{ cnfg.en_tcp }};
     localparam integer N_WBS = {{ cnfg.n_wbs }};

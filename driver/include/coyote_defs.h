@@ -237,6 +237,25 @@ extern bool en_hmm;
 #define BAR_DMA_CONFIG 1  
 #define BAR_SHELL_CONFIG 2 
 
+/*
+ * RF data converter windows in BAR_SHELL_CONFIG (only on boards with RF converters, in shell builds with EN_RF):
+ * the converter's own registers, then the RF service registers (hw/hdl/rf/rf_slave.sv)
+ */
+#define RF_CONV_OFFS 0x8000000
+#define RF_CONV_SIZE 0x40000
+#define RF_WINDOW_SIZE 0x41000
+
+/*
+ * Converter tile control registers, as in Xilinx's rfdc driver; the DAC tile used on the ZCU216 (hw/bd/zynq_us_plus/cr_rf.tcl)
+ */
+#define RF_DAC_TILE 2
+#define RF_DAC_TILE_OFFS(tile) (0x4000 + (tile) * 0x4000)
+#define RF_TILE_RESTART_OFFS 0x4
+#define RF_TILE_RESTART_STATE_OFFS 0x8
+#define RF_TILE_CURRENT_STATE_OFFS 0xc
+#define RF_TILE_STATE_OFF 1
+#define RF_TILE_STATE_RUNNING 15
+
 // Static and shell config registers, offset and size
 #define FPGA_STAT_CNFG_OFFS 0x0
 #define FPGA_STAT_CNFG_SIZE (32UL * 1024UL)
@@ -265,6 +284,8 @@ extern bool en_hmm;
 #define EN_STRM_SHIFT 0x0
 #define EN_MEM_MASK 0x2
 #define EN_MEM_SHIFT 0x1
+#define EN_RF_MASK 0x8000
+#define EN_RF_SHIFT 0xf
 #define N_STRM_AXI_MASK 0xfc
 #define N_STRM_AXI_SHIFT 0x2
 #define N_CARD_AXI_MASK 0x3f00
@@ -414,6 +435,7 @@ extern bool en_hmm;
 #define MMAP_CNFG 0x1
 #define MMAP_CNFG_AVX 0x2
 #define MMAP_CTRL 0x3
+#define MMAP_RF 0x4
 #define MMAP_RECONFIG 0x100
 
 // vFPGA IOCTL calls; see vfpga_ops.c for more details
@@ -1163,6 +1185,7 @@ struct bus_driver_data {
     int en_avx;                             /* Shell is built with AVX support */
     int en_wb;                              /* Shell is built with writeback support */
     int en_strm;                            /* Streaming interfaces from host are enabled */
+    int en_rf;                              /* RF data converters in the shell */
     int en_mem;                             /* Memory interfaces from card are enabled */
     int n_host_axi;                         /* Number of host AXI interfaces */
     int n_card_axi;                         /* Number of card AXI interfaces */

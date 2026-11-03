@@ -48,7 +48,8 @@ module tb_rf;
 
     // ADC model: 16-bit sample counter, 8 samples per clock
     logic [15:0] adc_next = 0;
-    always_ff @(posedge adc_clk) begin
+    bit adc_hold = 0;
+    always_ff @(posedge adc_clk) if (!adc_hold) begin
         for (int i = 0; i < 8; i++) adc_tdata[i*16 +: 16] <= adc_next + i;
         adc_next <= adc_next + 8;
     end
@@ -191,6 +192,18 @@ module tb_rf;
         end
         reg_rd('h08, r); check((r & 2) == 0, "disable cleared DAC underflow");
         reg_wr('h04, 0);
+
+        // ADC test pattern replaces the samples, even with the converter model's data held still
+        adc_hold = 1;
+        adc_watch = 1; adc_drain = 1; adc_bad = 0; adc_first = 1; adc_beats = 0;
+        reg_wr('h04, 5);
+        repeat (5000) @(posedge vclk);
+        check(adc_beats > 1000, $sformatf("test pattern running, %0d beats", adc_beats));
+        check(adc_bad == 0, "test pattern values consecutive");
+        reg_rd('h04, r); check(r == 5, "test pattern bit reads back");
+        reg_wr('h04, 0);
+        repeat (200) @(posedge vclk);
+        adc_hold = 0; adc_watch = 0; adc_first = 1; adc_drain = 0;
 
         // Both directions together
         adc_watch = 1; adc_drain = 1; adc_bad = 0;

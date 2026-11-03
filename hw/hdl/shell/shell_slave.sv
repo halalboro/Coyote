@@ -277,6 +277,7 @@ always_ff @(posedge aclk) begin
           axi_rdata[7:2] <= N_STRM_AXI;
           axi_rdata[13:8] <= N_CARD_AXI;
           axi_rdata[14] <= BLOCK_MEM_IMPL_EN;
+          axi_rdata[15] <= RF_FLOW;
         end
         PR_CNFG_REG: // PR config
           axi_rdata <= PR_FLOW;
