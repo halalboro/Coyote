@@ -47,7 +47,11 @@ static constexpr uint32_t RF_ID_REG = 0x00;
 static constexpr uint32_t RF_CTRL_REG = 0x04;
 static constexpr uint32_t RF_STATUS_REG = 0x08;
 static constexpr uint32_t RF_ADC_WORDS_REG = 0x0C;
+static constexpr uint32_t RF_DAC_WORDS_REG = 0x10;
 static constexpr uint32_t RF_ID = 0x52460001;
+static constexpr uint32_t CTRL_ADC_EN = 0x1;
+static constexpr uint32_t CTRL_DAC_EN = 0x2;
+static constexpr uint32_t CTRL_ADC_TEST = 0x4;
 
 // Converter tile registers, as in Xilinx's rfdc driver
 static constexpr uint32_t TILE_RESTART = 0x04;
@@ -80,6 +84,10 @@ cRF::cRF(unsigned int vfid, unsigned int device) {
 }
 
 cRF::~cRF() {
+    if (dac_started) {
+        dacStream(false);
+        dacShutdown();
+    }
     munmap(const_cast<uint32_t *>(regs), RF_WINDOW_SIZE);
     close(fd);
 }
@@ -109,11 +117,31 @@ bool cRF::adcStart() { return tileRestart(adcTile(ADC_TILE), TILE_STATE_OFF, TIL
 bool cRF::adcShutdown() { return tileRestart(adcTile(ADC_TILE), TILE_STATE_OFF, TILE_STATE_OFF); }
 bool cRF::dacShutdown() { return tileRestart(dacTile(DAC_TILE), TILE_STATE_OFF, TILE_STATE_OFF); }
 
-void cRF::adcStream(bool enable, bool test_pattern) {
-    // Bit 1, the DAC stream, stays 0
-    regs[(RF_SERVICE_OFFS + RF_CTRL_REG) / 4] = (test_pattern ? 0x4 : 0x0);
-    regs[(RF_SERVICE_OFFS + RF_CTRL_REG) / 4] = (test_pattern ? 0x4 : 0x0) | (enable ? 0x1 : 0x0);
+bool cRF::dacStart() {
+    dac_started = true;
+    if (!tileRestart(dacTile(DAC_TILE), TILE_STATE_OFF, TILE_STATE_RUNNING)) {
+        dacShutdown();
+        return false;
+    }
+    return true;
 }
+
+void cRF::writeCtrl(uint32_t bits, uint32_t mask) {
+    ctrl = (ctrl & ~mask) | (bits & mask);
+    regs[(RF_SERVICE_OFFS + RF_CTRL_REG) / 4] = ctrl;
+}
+
+void cRF::adcStream(bool enable, bool test_pattern) {
+    // The test bit changes while the stream is disabled
+    writeCtrl(test_pattern ? CTRL_ADC_TEST : 0, CTRL_ADC_EN | CTRL_ADC_TEST);
+    if (enable) {
+        writeCtrl(CTRL_ADC_EN, CTRL_ADC_EN);
+    }
+}
+
+void cRF::dacStream(bool enable) { writeCtrl(enable ? CTRL_DAC_EN : 0, CTRL_DAC_EN); }
+bool cRF::dacUnderflow() const { return regs[(RF_SERVICE_OFFS + RF_STATUS_REG) / 4] & 0x2; }
+uint32_t cRF::dacWords() const { return regs[(RF_SERVICE_OFFS + RF_DAC_WORDS_REG) / 4]; }
 
 bool cRF::adcOverflow() const { return regs[(RF_SERVICE_OFFS + RF_STATUS_REG) / 4] & 0x1; }
 uint32_t cRF::adcWords() const { return regs[(RF_SERVICE_OFFS + RF_ADC_WORDS_REG) / 4]; }

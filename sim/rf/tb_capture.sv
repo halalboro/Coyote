@@ -10,7 +10,9 @@ module tb_capture;
     AXI4S  axis_rf (.aclk(aclk), .aresetn(aresetn));
     AXI4SR axis_card (.aclk(aclk), .aresetn(aresetn));
 
-    rf_capture dut (.aclk, .aresetn, .axi_ctrl(axil), .axis_rf, .axis_card);
+    AXI4S  axis_dac (.aclk(aclk), .aresetn(aresetn));
+
+    rf_capture dut (.aclk, .aresetn, .axi_ctrl(axil), .axis_rf, .axis_card, .axis_dac);
 
     int errors = 0;
     task automatic check(input bit ok, input string msg);
@@ -71,6 +73,27 @@ module tb_capture;
         check(lasts == 1 && last_pos == n, {name, ": one tlast, on the final word"});
     endtask
 
+    // DAC side: logs every word, with optional stalls
+    bit dac_stall = 0;
+    logic [511:0] dac_got[$];
+    logic dac_ready = 1;
+    always @(posedge aclk) dac_ready <= !dac_stall || ($urandom_range(3) == 0);
+    assign axis_dac.tready = dac_ready;
+    always @(posedge aclk) if (axis_dac.tvalid && axis_dac.tready) dac_got.push_back(axis_dac.tdata);
+
+    function automatic logic [15:0] wave(input int i);
+        return 16'(i * 7 + 3);
+    endfunction
+
+    // Checks that the words received are the waveform in order, looping, from its start
+    task automatic check_play(input string name, input int min_words);
+        int bad = 0;
+        check(dac_got.size() >= min_words, $sformatf("%s: %0d words played", name, dac_got.size()));
+        foreach (dac_got[w]) for (int s = 0; s < 32; s++)
+            if (dac_got[w][s*16 +: 16] !== wave((w % 64) * 32 + s)) bad++;
+        check(bad == 0, {name, ": samples in order, looping"});
+    endtask
+
     longint r; int seq0;
     initial begin
         axil.awvalid = 0; axil.wvalid = 0; axil.arvalid = 0; axil.bready = 0; axil.rready = 0;
@@ -101,8 +124,31 @@ module tb_capture;
         check(got.size() == 0, "zero words does nothing");
         reg_rd(0, r); check(r == 0, "length reads back");
 
+        // Waveform playback
+        repeat (20) @(posedge aclk);
+        check(!axis_dac.tvalid, "nothing offered to the DAC before playing");
+        reg_rd(5, r); check(r == 0, "playback is off after reset");
+        for (int i = 0; i < 2048; i++) reg_wr(4, (longint'(i) << 16) | longint'(wave(i)));
+        repeat (20) @(posedge aclk);
+        check(!axis_dac.tvalid && dac_got.size() == 0, "writing samples plays nothing");
+        reg_wr(5, 1);
+        repeat (400) @(posedge aclk);
+        reg_rd(5, r); check(r == 1, "playback reads back on");
+        reg_wr(5, 0);
+        repeat (5) @(posedge aclk);
+        check_play("free running", 300);
+        check(!axis_dac.tvalid, "stops offering when off");
+        dac_got.delete();
+        dac_stall = 1;
+        reg_wr(5, 1);
+        repeat (2000) @(posedge aclk);
+        reg_wr(5, 0);
+        dac_stall = 0;
+        repeat (5) @(posedge aclk);
+        check_play("with stalls, restarted from the beginning", 300);
+
         if (errors) $display("FAIL: %0d errors", errors); else $display("PASS");
         $finish;
     end
-    initial begin #1ms; $display("FAIL: timeout"); $finish; end
+    initial begin #5ms; $display("FAIL: timeout"); $finish; end
 endmodule

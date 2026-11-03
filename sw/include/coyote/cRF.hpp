@@ -36,7 +36,8 @@ namespace coyote {
  *
  * The reference clocks are not programmed here: they stay programmed until the board is power cycled, and are
  * set with PYNQ's xrfclk (see docs/source/intro/zcu216-notes.rst). The driver shuts the DAC tile down whenever
- * it loads, and this class has no way of starting it.
+ * it loads. If this object started the DAC tile, its destructor stops the DAC stream and shuts the tile down again;
+ * a process that is killed leaves it running until the driver is next loaded.
  */
 class cRF {
 public:
@@ -65,6 +66,10 @@ public:
     /// Starts the ADC tile and waits until it runs; returns false after about 1 s if it does not
     bool adcStart();
 
+    /// Starts the DAC tile and waits until it runs; returns false after about 1 s if it does not, leaving it off
+    /// Only call this when you know what the DAC output is connected to: the output is live as soon as it runs
+    bool dacStart();
+
     /// Shuts a tile down and waits until it is off; returns false after about 1 s if it is not
     bool adcShutdown();
     bool dacShutdown();
@@ -72,6 +77,15 @@ public:
     /// Turns the ADC stream to the vFPGA on or off; turning it off clears its flag and counter
     /// With test_pattern, the stream carries consecutive 16-bit values instead of samples
     void adcStream(bool enable, bool test_pattern = false);
+
+    /// Turns the DAC stream from the vFPGA on or off; turning it off clears its flag and counter, and outputs zeros
+    void dacStream(bool enable);
+
+    /// True if the DAC ran out of data since its stream was enabled
+    bool dacUnderflow() const;
+
+    /// Number of 64-byte words sent to the DAC since its stream was enabled
+    uint32_t dacWords() const;
 
     /// True if ADC words were dropped since the stream was enabled
     bool adcOverflow() const;
@@ -82,9 +96,12 @@ public:
 private:
     int fd;
     volatile uint32_t *regs;
+    uint32_t ctrl = 0;
+    bool dac_started = false;
 
     uint32_t tileRd(uint32_t tile_base, uint32_t offs) const;
     bool tileRestart(uint32_t tile_base, uint32_t start, uint32_t end);
+    void writeCtrl(uint32_t bits, uint32_t mask);
 };
 
 }

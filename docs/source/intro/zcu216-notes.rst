@@ -117,7 +117,7 @@ stripes over DDR channels, not only the ZCU216.
 RF data converters
 ------------------
 This part is experimental: ADC capture has been tested on a board, but only with an internal test pattern and with no signal on the input.
-No known signal has been captured, the DAC stream has only been simulated, and no DAC has been driven with data. ``-DEN_RF=1`` adds the RF data converter to the shell; the default is off, and images built without it
+No known signal has been captured. The DAC has run with data, but its output has not been observed. ``-DEN_RF=1`` adds the RF data converter to the shell; the default is off, and images built without it
 never touch the converters or the clock chips. Do not load such an image, program the clock chips or enable a DAC before
 checking what is connected to the RF outputs.
 
@@ -136,7 +136,7 @@ A DAC with zero data is not necessarily silent: once it is running, its output c
 The converters connect to one vFPGA, chosen with ``-DRF_VFPGA_ID`` (default 0), through two 512-bit streams on the vFPGA clock:
 ``axis_rf_recv`` carries ADC samples and ``axis_rf_send`` carries DAC samples. Each converter delivers 8 16-bit samples per
 307.2 MHz clock (4.9 GB/s). The vFPGA has to handle both streams, or the build fails in ``opt_design``; ``examples/13_rf_capture`` captures ADC data to
-card memory and ties the DAC stream off. The logic is in ``hw/hdl/rf`` (testbench in ``sim/rf``). Both directions are
+card memory and can play a waveform to the DAC stream. The logic is in ``hw/hdl/rf`` (testbench in ``sim/rf``). Both directions are
 off after reset and are enabled through these registers, at ``0xA804_0000``:
 
 ====== ===================================================================
@@ -158,11 +158,11 @@ RPBF-1. The pins are dedicated, so they have no constraints file.
 
 On the board, PYNQ's ``xrfdc`` driver works with this IP version (2.6) when given the parameters from the ``design_rf`` ``.hwh``
 and ``XILINX_XRT=/usr`` and ``BOARD=ZCU216`` in the environment. ``xrfclk.set_ref_clks(lmk_freq=245.76, lmx_freq=491.52)``, the
-settings QICK uses, brings ADC tile 2 to state 15 with its PLL locked. The DAC tile's lock has not been checked with these
-clock settings, because the tile was kept off. The clock chips are not yet programmed from Coyote's software, so ``xrfclk`` is still needed once after every power cycle.
+settings QICK uses, brings ADC tile 2 to state 15 with its PLL locked. The DAC tile also reaches state 15 with its PLL locked. The clock chips are not yet programmed from Coyote's software, so ``xrfclk`` is still needed once after every power cycle.
 
 The ``cRF`` class (``sw/include/coyote/cRF.hpp``) maps these registers and the converter's tile registers through the driver. It reads
-tile state and PLL lock, starts and shuts down the ADC tile, shuts down the DAC tile, and controls the ADC stream. It deliberately cannot start the DAC.
+tile state and PLL lock, starts and shuts down the ADC tile, shuts down the DAC tile, and controls the ADC and DAC streams. It can also start the DAC tile, and if it did, its destructor stops the stream and shuts the tile down;
+a process that is killed leaves the tile running until the driver is next loaded.
 On an image without the converter, the driver refuses the mapping and ``cRF`` throws.
 
 Example 13 captures up to 128 MB to card memory (``test -s <MB> -p <0|1> -o <file>``); ``-p 1`` uses the test pattern, whose samples are consecutive
@@ -170,6 +170,12 @@ Example 13 captures up to 128 MB to card memory (``test -s <MB> -p <0|1> -o <fil
 The pattern starts in the ADC clock domain but after the converter, so it shows that no data is lost on the way to card memory, not that the converter or the sample
 order within a word is right; that needs a known signal. With nothing driving the input, samples are multiples of 4 (a 14-bit converter), with an RMS of about 25 and
 spurs at 614.4 and 1228.8 MHz, a quarter and half of the sampling rate.
+
+Only use the next option when you know what the DAC output is connected to. ``test -s 1 -k <bin> -a <amplitude>`` plays a tone of ``bin`` times 1.2 MHz on DAC tile 2, block 0
+during the capture and measures it at the ADC. The amplitude defaults to 1/16 of full scale, and the program refuses more than 1/4. On a board with cables between XM655 ports,
+the DAC ran with no underflow, but no tone reached ADC tile 2, block 0 between 30 and 1201 MHz, at either 1/16 or 1/4 of full scale. The cause is not known: these two channels may simply not
+be cabled to each other. ``DAC_VOUT0_230`` is on connector ``JHC3`` and ``ADC_VIN0_226`` on ``JHC7``, but which balun each cable reaches has not been traced. The sampling rate
+only reaches 1.2288 GHz, so only the ``<1GHz`` baluns are suited to it.
 
 Future work includes shell and vFPGA reconfiguration (which requires a floorplan around the RF data converters,
 and handing the configuration port over from PCAP to ICAP), programming the clock chips from Coyote's software, and configurable converter channels and rates.
