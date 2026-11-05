@@ -17,8 +17,22 @@ module tb_rf;
     logic [127:0] adc_tdata = 0, dac_tdata;
     logic adc_tvalid = 1, adc_tready, dac_tvalid, dac_tready = 1;
 
+    // Channel 0 is the model below; on the others, the top bits of each sample carry the channel number
+    logic [3:0][127:0] adc_ch, dac_ch;
+    logic [3:0] dac_valid_ch, dac_ready_ch, adc_ready_ch;
+    always_comb begin
+        adc_ch[0] = adc_tdata;
+        for (int c = 1; c < 4; c++) for (int i = 0; i < 8; i++) adc_ch[c][i*16 +: 16] = {2'(c), adc_tdata[i*16 +: 14]};
+    end
+    logic [1:0] dac_model_ch = 0;
+    assign dac_tdata = dac_ch[dac_model_ch];
+    assign dac_tvalid = dac_valid_ch[dac_model_ch];
+    assign adc_tready = adc_ready_ch[0];
+    always_comb begin dac_ready_ch = '0; dac_ready_ch[dac_model_ch] = dac_tready; end
+
     rf_service dut (.aclk, .aresetn, .s_axi_cnfg(axil), .vclk, .m_axis_adc(axis_adc), .s_axis_dac(axis_dac),
-        .adc_clk, .adc_tdata, .adc_tvalid, .adc_tready, .dac_clk, .dac_tdata, .dac_tvalid, .dac_tready);
+        .adc_clk, .adc_tdata(adc_ch), .adc_tvalid({4{adc_tvalid}}), .adc_tready(adc_ready_ch),
+        .dac_clk, .dac_tdata(dac_ch), .dac_tvalid(dac_valid_ch), .dac_tready(dac_ready_ch));
 
     int errors = 0;
     task automatic check(input bit ok, input string msg);
@@ -214,8 +228,53 @@ module tb_rf;
         check(adc_bad == 0, "ADC in order with both running");
         reg_wr('h04, 0);
 
+        // Channel selection
+        repeat (200) @(posedge vclk);
+        dac_send = 0;
+        reg_rd('h14, r); check(r == 4, "four channels reported");
+        reg_rd('h1C, r); check(r == 2457600, "sampling rate reported");
+        reg_rd('h18, r); check(r == 0, "channel 0 selected after reset");
+        for (int c = 3; c >= 0; c--) begin
+            automatic int bad = 0, beats = 0;
+            reg_wr('h18, c);
+            reg_rd('h18, r); check(r == c, "ADC channel reads back");
+            adc_watch = 0; adc_drain = 1;
+            reg_wr('h04, 1);
+            repeat (200) @(posedge vclk);
+            repeat (500) begin
+                @(posedge vclk);
+                if (c != 0 && axis_adc.tvalid && axis_adc.tready) begin
+                    beats++;
+                    for (int i = 0; i < 32; i++) if (axis_adc.tdata[i*16+14 +: 2] !== 2'(c)) bad++;
+                end
+            end
+            reg_wr('h04, 0);
+            repeat (100) @(posedge vclk);
+            if (c != 0) check(beats > 100 && bad == 0, $sformatf("ADC channel %0d selected: %0d words, %0d wrong", c, beats, bad));
+        end
+        adc_drain = 0;
+        for (int c = 3; c >= 0; c--) begin
+            automatic int nonzero [4] = '{default: 0};
+            dac_model_ch = c;
+            reg_wr('h18, c << 8);
+            repeat (20) @(posedge aclk);
+            reg_wr('h04, 2);
+            dac_send = 1;
+            repeat (2000) begin
+                @(posedge dac_clk);
+                for (int j = 0; j < 4; j++) if (dac_ch[j] !== '0) nonzero[j]++;
+            end
+            dac_send = 0;
+            reg_wr('h04, 0);
+            repeat (100) @(posedge vclk);
+            for (int j = 0; j < 4; j++) begin
+                if (j == c) check(nonzero[j] > 100, $sformatf("DAC channel %0d gets data when selected", j));
+                else check(nonzero[j] == 0, $sformatf("DAC channel %0d stays zero while %0d is selected", j, c));
+            end
+        end
+
         if (errors) $display("FAIL: %0d errors", errors); else $display("PASS");
         $finish;
     end
-    initial begin #2ms; $display("FAIL: timeout"); $finish; end
+    initial begin #5ms; $display("FAIL: timeout"); $finish; end
 endmodule

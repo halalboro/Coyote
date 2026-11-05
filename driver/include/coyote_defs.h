@@ -244,11 +244,15 @@ extern bool en_hmm;
 #define RF_CONV_OFFS 0x8000000
 #define RF_CONV_SIZE 0x40000
 #define RF_WINDOW_SIZE 0x41000
+#define RF_SERVICE_OFFS 0x40000
+#define RF_SERVICE_CHANNELS_OFFS 0x14
 
 /*
- * Converter tile control registers, as in Xilinx's rfdc driver; the DAC tile used on the ZCU216 (hw/bd/zynq_us_plus/cr_rf.tcl)
+ * Converter tile control registers, as in Xilinx's rfdc driver; the DAC tiles used on the ZCU216 (hw/bd/zynq_us_plus/cr_rf.tcl)
+ * Shells that report no channel count (older ones) only have tile 2.
  */
 #define RF_DAC_TILE 2
+#define RF_DAC_TILE_LAST 3
 #define RF_DAC_TILE_OFFS(tile) (0x4000 + (tile) * 0x4000)
 #define RF_TILE_RESTART_OFFS 0x4
 #define RF_TILE_RESTART_STATE_OFFS 0x8

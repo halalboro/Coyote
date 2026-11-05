@@ -201,6 +201,7 @@ set(UCLK_F 250 CACHE STRING "User clock frequency")
 # RF data converter (experimental, zcu216 only): one RF-ADC and one RF-DAC in the shell, no data path yet
 set(EN_RF 0 CACHE STRING "RF data converter")
 set(RF_VFPGA_ID 0 CACHE STRING "ID of the vFPGA connected to the RF streams.")
+set(RF_RATE_KHZ 2457600 CACHE STRING "Sampling rate of the RF converters in kHz; their fabric clock is an eighth of it.")
 
 # Static layer clock frequency; only applicable to Versal devices,
 # since it can be dynamically generated from the CIPS
@@ -515,6 +516,10 @@ macro(validation_checks_hw)
 
         if(EN_RF AND NOT (FDEV_NAME STREQUAL "zcu216"))
             message(FATAL_ERROR "${FDEV_NAME}: the RF data converter (EN_RF=1) is only supported on the zcu216.")
+        endif()
+        math(EXPR RF_RATE_REMAINDER "${RF_RATE_KHZ} % 8")
+        if(EN_RF AND ((RF_RATE_KHZ LESS 500000) OR (RF_RATE_KHZ GREATER 2457600) OR NOT (RF_RATE_REMAINDER EQUAL 0)))
+            message(FATAL_ERROR "RF_RATE_KHZ (${RF_RATE_KHZ}) must be from 500000 to 2457600 and a multiple of 8.")
         endif()
         if(EN_RF AND NOT (RF_VFPGA_ID LESS N_REGIONS))
             message(FATAL_ERROR "RF_VFPGA_ID (${RF_VFPGA_ID}) must be smaller than N_REGIONS (${N_REGIONS}).")

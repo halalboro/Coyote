@@ -8,8 +8,13 @@
  *   0x08 R   [0] ADC overflow, [1] DAC underflow; sticky, cleared by disabling that direction
  *   0x0C R   ADC stream words written (64 bytes each), cleared by disabling
  *   0x10 R   DAC stream words played (64 bytes each), cleared by disabling
+ *   0x14 R   Number of converter channels per direction (shells from before this register read 0, and have one)
+ *   0x18 RW  [1:0] ADC channel, [9:8] DAC channel; change them while that direction is disabled
+ *   0x1C R   Sampling rate in kHz (shells from before this register read 0, and run at 2457600)
  */
-module rf_slave (
+module rf_slave #(
+    parameter logic [31:0] RATE_KHZ = 32'd2457600
+) (
     input  logic        aclk,
     input  logic        aresetn,
     AXI4L.s             s_axi,
@@ -17,6 +22,8 @@ module rf_slave (
     output logic        adc_enable,
     output logic        dac_enable,
     output logic        adc_test,
+    output logic [1:0]  adc_select,
+    output logic [1:0]  dac_select,
     input  logic        adc_overflow,
     input  logic        dac_underflow,
     input  logic [31:0] adc_words,
@@ -45,6 +52,8 @@ always_ff @(posedge aclk) begin
         adc_enable <= 1'b0;
         dac_enable <= 1'b0;
         adc_test <= 1'b0;
+        adc_select <= '0;
+        dac_select <= '0;
     end else begin
         if (s_axi.awvalid && s_axi.awready) begin
             waddr <= s_axi.awaddr[7:0];
@@ -64,6 +73,10 @@ always_ff @(posedge aclk) begin
                 dac_enable <= wdata[1];
                 adc_test <= wdata[2];
             end
+            if (waddr[7:2] == 6'd6) begin
+                if (wstrb[0]) adc_select <= wdata[1:0];
+                if (wstrb[1]) dac_select <= wdata[9:8];
+            end
         end
         if (s_axi.bvalid && s_axi.bready) s_axi.bvalid <= 1'b0;
 
@@ -75,6 +88,9 @@ always_ff @(posedge aclk) begin
                 6'd2:    s_axi.rdata <= {30'd0, dac_underflow, adc_overflow};
                 6'd3:    s_axi.rdata <= adc_words;
                 6'd4:    s_axi.rdata <= dac_words;
+                6'd5:    s_axi.rdata <= 32'd4;
+                6'd6:    s_axi.rdata <= {22'd0, dac_select, 6'd0, adc_select};
+                6'd7:    s_axi.rdata <= RATE_KHZ;
                 default: s_axi.rdata <= 32'd0;
             endcase
         end

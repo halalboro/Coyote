@@ -116,6 +116,7 @@ set cfg(en_nclk)                ${EN_NCLK}
 set cfg(en_uclk)                ${EN_UCLK}
 set cfg(en_rf)                  ${EN_RF}
 set cfg(rf_vfpga_id)            ${RF_VFPGA_ID}
+set cfg(rf_rate_khz)            ${RF_RATE_KHZ}
 set cfg(aclk_f)                 ${ACLK_F}
 set cfg(nclk_f)                 ${NCLK_F}
 set cfg(uclk_f)                 ${UCLK_F}

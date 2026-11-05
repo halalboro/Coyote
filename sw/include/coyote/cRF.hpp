@@ -34,14 +34,16 @@ namespace coyote {
 /**
  * @brief Control of the RF data converters of a shell built with EN_RF (ZCU216 only)
  *
- * The reference clocks are not programmed here: they stay programmed until the board is power cycled, and are
- * set with PYNQ's xrfclk (see docs/source/intro/zcu216-notes.rst). The driver shuts the DAC tile down whenever
- * it loads. If this object started the DAC tile, its destructor stops the DAC stream and shuts the tile down again;
+ * Channels: 0 is tile 2 block 0, 1 is tile 2 block 2, 2 is tile 3 block 0, 3 is tile 3 block 2. Older shells only have channel 0.
+ * Tile 3 takes its clock from tile 2, so the tiles of a direction are always started and shut down together.
+ *
+ * The reference clocks stay programmed until the board is power cycled; programClocks() sets them, and PYNQ's xrfclk
+ * can too (see docs/source/intro/zcu216-notes.rst). The driver shuts the DAC tile down whenever it loads. If this object started the DAC tiles, its destructor stops the DAC stream and shuts them down again;
  * a process that is killed leaves it running until the driver is next loaded.
  */
 class cRF {
 public:
-    /// The converter tiles used by the shell on the ZCU216 (hw/bd/zynq_us_plus/cr_rf.tcl)
+    /// The first converter tiles used by the shell on the ZCU216 (hw/bd/zynq_us_plus/cr_rf.tcl)
     static constexpr int ADC_TILE = 2;
     static constexpr int DAC_TILE = 2;
 
@@ -55,24 +57,47 @@ public:
     cRF(const cRF &) = delete;
     cRF &operator=(const cRF &) = delete;
 
-    /// Current state of the tile's state machine
-    uint32_t adcState() const;
-    uint32_t dacState() const;
+    /// Number of converter channels in each direction, and tiles they are on
+    int channels() const;
+    int tiles() const;
 
-    /// True if the tile's PLL is locked
-    bool adcLocked() const;
-    bool dacLocked() const;
+    /// Sampling rate of all converters, in samples per second, set when the shell is built (RF_RATE_KHZ)
+    double sampleRate() const;
 
-    /// Starts the ADC tile and waits until it runs; returns false after about 1 s if it does not
+    /// Current state of a tile's state machine
+    uint32_t adcState(int tile = ADC_TILE) const;
+    uint32_t dacState(int tile = DAC_TILE) const;
+
+    /// True if a tile's PLL is locked
+    bool adcLocked(int tile = ADC_TILE) const;
+    bool dacLocked(int tile = DAC_TILE) const;
+
+    /// True if every tile of the direction is running or off
+    bool adcRunning() const;
+    bool dacOff() const;
+
+    /// Starts the ADC tiles and waits until they run; returns false after about 1 s per tile if they do not
     bool adcStart();
 
-    /// Starts the DAC tile and waits until it runs; returns false after about 1 s if it does not, leaving it off
+    /// Starts the DAC tiles and waits until they run; returns false after about 1 s per tile if they do not, leaving them off
     /// Only call this when you know what the DAC output is connected to: the output is live as soon as it runs
     bool dacStart();
 
-    /// Shuts a tile down and waits until it is off; returns false after about 1 s if it is not
+    /// Shuts the tiles down and waits until they are off; returns false after about 1 s per tile if they are not
     bool adcShutdown();
     bool dacShutdown();
+
+    /// Shuts down and starts one DAC tile; tile 3 needs tile 2 running to pass data. Returns false if it did not reach the state.
+    bool dacRestart(int tile);
+
+    /// Programs the reference clock chips for 2.4576 GS/s and restarts the ADC tiles, leaving the DAC tiles off; needs root.
+    /// Returns false if the DAC tiles did not stay off or the ADC tiles did not start; throws if the chips cannot be written.
+    /// Everything using the converters stops while this runs, and the timing between ADC and DAC samples can change.
+    bool programClocks();
+
+    /// Chooses the channel of a stream; only call these while that stream is off
+    void adcSelect(int channel);
+    void dacSelect(int channel);
 
     /// Turns the ADC stream to the vFPGA on or off; turning it off clears its flag and counter
     /// With test_pattern, the stream carries consecutive 16-bit values instead of samples
@@ -97,6 +122,7 @@ private:
     int fd;
     volatile uint32_t *regs;
     uint32_t ctrl = 0;
+    uint32_t select = 0;
     bool dac_started = false;
 
     uint32_t tileRd(uint32_t tile_base, uint32_t offs) const;

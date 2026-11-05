@@ -38,6 +38,8 @@
 
 namespace coyote {
 
+void rfClockProgram();  // cRFClocks.cpp
+
 // Layout of the window the driver maps; must match driver/include/coyote_defs.h
 static constexpr uint64_t RF_WINDOW_SIZE = 0x41000;
 static constexpr uint32_t RF_SERVICE_OFFS = 0x40000;
@@ -48,6 +50,9 @@ static constexpr uint32_t RF_CTRL_REG = 0x04;
 static constexpr uint32_t RF_STATUS_REG = 0x08;
 static constexpr uint32_t RF_ADC_WORDS_REG = 0x0C;
 static constexpr uint32_t RF_DAC_WORDS_REG = 0x10;
+static constexpr uint32_t RF_CHANNELS_REG = 0x14;
+static constexpr uint32_t RF_SELECT_REG = 0x18;
+static constexpr uint32_t RF_RATE_REG = 0x1C;
 static constexpr uint32_t RF_ID = 0x52460001;
 static constexpr uint32_t CTRL_ADC_EN = 0x1;
 static constexpr uint32_t CTRL_DAC_EN = 0x2;
@@ -108,22 +113,100 @@ bool cRF::tileRestart(uint32_t tile_base, uint32_t start, uint32_t end) {
     return false;
 }
 
-uint32_t cRF::adcState() const { return tileRd(adcTile(ADC_TILE), TILE_CURRENT_STATE); }
-uint32_t cRF::dacState() const { return tileRd(dacTile(DAC_TILE), TILE_CURRENT_STATE); }
-bool cRF::adcLocked() const { return tileRd(adcTile(ADC_TILE), TILE_STATUS) & TILE_PLL_LOCKED; }
-bool cRF::dacLocked() const { return tileRd(dacTile(DAC_TILE), TILE_STATUS) & TILE_PLL_LOCKED; }
+int cRF::channels() const {
+    uint32_t n = regs[(RF_SERVICE_OFFS + RF_CHANNELS_REG) / 4];
+    return n ? n : 1;
+}
+double cRF::sampleRate() const {
+    uint32_t khz = regs[(RF_SERVICE_OFFS + RF_RATE_REG) / 4];
+    return (khz ? khz : 2457600) * 1e3;
+}
+int cRF::tiles() const { return channels() > 2 ? 2 : 1; }
 
-bool cRF::adcStart() { return tileRestart(adcTile(ADC_TILE), TILE_STATE_OFF, TILE_STATE_RUNNING); }
-bool cRF::adcShutdown() { return tileRestart(adcTile(ADC_TILE), TILE_STATE_OFF, TILE_STATE_OFF); }
-bool cRF::dacShutdown() { return tileRestart(dacTile(DAC_TILE), TILE_STATE_OFF, TILE_STATE_OFF); }
+uint32_t cRF::adcState(int tile) const { return tileRd(adcTile(tile), TILE_CURRENT_STATE); }
+uint32_t cRF::dacState(int tile) const { return tileRd(dacTile(tile), TILE_CURRENT_STATE); }
+bool cRF::adcLocked(int tile) const { return tileRd(adcTile(tile), TILE_STATUS) & TILE_PLL_LOCKED; }
+bool cRF::dacLocked(int tile) const { return tileRd(dacTile(tile), TILE_STATUS) & TILE_PLL_LOCKED; }
+
+bool cRF::adcRunning() const {
+    for (int i = 0; i < tiles(); i++) {
+        if (adcState(ADC_TILE + i) != TILE_STATE_RUNNING) { return false; }
+    }
+    return true;
+}
+
+bool cRF::dacOff() const {
+    for (int i = 0; i < tiles(); i++) {
+        if (dacState(DAC_TILE + i) != TILE_STATE_OFF) { return false; }
+    }
+    return true;
+}
+
+bool cRF::adcStart() {
+    bool ok = true;
+    for (int i = 0; i < tiles(); i++) {
+        ok &= tileRestart(adcTile(ADC_TILE + i), TILE_STATE_OFF, TILE_STATE_RUNNING);
+    }
+    return ok;
+}
+
+bool cRF::adcShutdown() {
+    bool ok = true;
+    for (int i = tiles() - 1; i >= 0; i--) {
+        ok &= tileRestart(adcTile(ADC_TILE + i), TILE_STATE_OFF, TILE_STATE_OFF);
+    }
+    return ok;
+}
+
+bool cRF::dacShutdown() {
+    bool ok = true;
+    for (int i = tiles() - 1; i >= 0; i--) {
+        ok &= tileRestart(dacTile(DAC_TILE + i), TILE_STATE_OFF, TILE_STATE_OFF);
+    }
+    return ok;
+}
 
 bool cRF::dacStart() {
     dac_started = true;
-    if (!tileRestart(dacTile(DAC_TILE), TILE_STATE_OFF, TILE_STATE_RUNNING)) {
-        dacShutdown();
-        return false;
+    bool ok = true;
+    for (int i = 0; i < tiles(); i++) {
+        ok &= tileRestart(dacTile(DAC_TILE + i), TILE_STATE_OFF, TILE_STATE_RUNNING);
     }
-    return true;
+    if (!ok) {
+        dacShutdown();
+    }
+    return ok;
+}
+
+bool cRF::dacRestart(int tile) {
+    dac_started = true;
+    return tileRestart(dacTile(tile), TILE_STATE_OFF, TILE_STATE_OFF) && tileRestart(dacTile(tile), TILE_STATE_OFF, TILE_STATE_RUNNING);
+}
+
+bool cRF::programClocks() {
+    // The tiles lose their clock while the chips are written; shutting down fails harmlessly if they never had one
+    dacStream(false);
+    adcStream(false);
+    dacShutdown();
+    adcShutdown();
+
+    rfClockProgram();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // A tile that was waiting for a clock may have started by itself, so the DAC is shut down again
+    return dacShutdown() && adcStart();
+}
+
+void cRF::adcSelect(int channel) {
+    if (channel < 0 || channel >= channels()) { throw std::runtime_error("ERROR: no such ADC channel"); }
+    select = (select & ~0x3u) | channel;
+    regs[(RF_SERVICE_OFFS + RF_SELECT_REG) / 4] = select;
+}
+
+void cRF::dacSelect(int channel) {
+    if (channel < 0 || channel >= channels()) { throw std::runtime_error("ERROR: no such DAC channel"); }
+    select = (select & ~0x300u) | (channel << 8);
+    regs[(RF_SERVICE_OFFS + RF_SELECT_REG) / 4] = select;
 }
 
 void cRF::writeCtrl(uint32_t bits, uint32_t mask) {

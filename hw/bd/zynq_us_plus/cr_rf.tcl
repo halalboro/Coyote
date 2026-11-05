@@ -24,15 +24,18 @@
 # SOFTWARE.
 ######################################################################################
 
-# RF data converter (EN_RF=1), zcu216: one RF-ADC and one RF-DAC on tile 2 (the tiles that receive the reference clocks
-# from the on-board clock chips, so no clock distribution between tiles is needed)
+# RF data converter (EN_RF=1), zcu216: four RF-ADCs and four RF-DACs, the channels on the XM655's connectors JHC7 and JHC3
+#   Channel 0: tile 2 block 0, channel 1: tile 2 block 2, channel 2: tile 3 block 0, channel 3: tile 3 block 2
+# Only tile 2 receives reference clocks from the on-board clock chips; it passes them on to tile 3.
 #
-# Clocks: 245.76 MHz reference clocks, 2.4576 GSPS on both converters, 8 samples (16 bits each) per 307.2 MHz fabric cycle
-#
-# NOTE: The DAC data inputs are tied to zero and the ADC data is discarded, so this design cannot output a signal.
-# Connecting them to the rest of the shell is future work, see docs/source/intro/zcu216-notes.rst
+# Clocks: 245.76 MHz reference clocks; all converters sample at RF_RATE_KHZ (default 2.4576 GSPS), 8 samples (16 bits each) per fabric cycle.
+# Each direction uses one fabric clock, from tile 2, for both tiles, so tile 2 has to run for tile 3 to pass data.
 proc cr_bd_design_rf { parentCell } {
   upvar #0 cfg cnfg
+
+  set rate_ghz [format %.6f [expr {$cnfg(rf_rate_khz) / 1000000.0}]]
+  set fabric_mhz [format %.3f [expr {$cnfg(rf_rate_khz) / 8000.0}]]
+  set fabric_hz [expr {$cnfg(rf_rate_khz) * 125}]
 
   set design_name design_rf
   create_bd_design $design_name
@@ -55,48 +58,43 @@ proc cr_bd_design_rf { parentCell } {
   create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:diff_clock_rtl:1.0 dac2_clk
   set_property CONFIG.FREQ_HZ {245760000} [get_bd_intf_ports dac2_clk]
   create_bd_intf_port -mode Slave -vlnv xilinx.com:display_usp_rf_data_converter:diff_pins_rtl:1.0 sysref_in
-  create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:diff_analog_io_rtl:1.0 vin20
-  create_bd_intf_port -mode Master -vlnv xilinx.com:interface:diff_analog_io_rtl:1.0 vout20
+  foreach b {20 22 30 32} {
+    create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:diff_analog_io_rtl:1.0 vin$b
+    create_bd_intf_port -mode Master -vlnv xilinx.com:interface:diff_analog_io_rtl:1.0 vout$b
+  }
 
   # Converter streams and clocks
-  set m_axis_adc [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:axis_rtl:1.0 m_axis_adc ]
-  set_property -dict [ list CONFIG.TDATA_NUM_BYTES {16} CONFIG.FREQ_HZ {307200000} ] $m_axis_adc
-  set s_axis_dac [ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:axis_rtl:1.0 s_axis_dac ]
-  set_property -dict [ list CONFIG.TDATA_NUM_BYTES {16} CONFIG.HAS_TREADY {1} CONFIG.HAS_TKEEP {0} CONFIG.HAS_TLAST {0} CONFIG.HAS_TSTRB {0} CONFIG.TUSER_WIDTH {0} CONFIG.TID_WIDTH {0} CONFIG.TDEST_WIDTH {0} CONFIG.FREQ_HZ {307200000} ] $s_axis_dac
+  set busif_adc {}
+  set busif_dac {}
+  foreach ch {0 1 2 3} {
+    set m_axis_adc [ create_bd_intf_port -mode Master -vlnv xilinx.com:interface:axis_rtl:1.0 m_axis_adc$ch ]
+    set_property -dict [ list CONFIG.TDATA_NUM_BYTES {16} CONFIG.FREQ_HZ $fabric_hz ] $m_axis_adc
+    set s_axis_dac [ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:axis_rtl:1.0 s_axis_dac$ch ]
+    set_property -dict [ list CONFIG.TDATA_NUM_BYTES {16} CONFIG.HAS_TREADY {1} CONFIG.HAS_TKEEP {0} CONFIG.HAS_TLAST {0} CONFIG.HAS_TSTRB {0} CONFIG.TUSER_WIDTH {0} CONFIG.TID_WIDTH {0} CONFIG.TDEST_WIDTH {0} CONFIG.FREQ_HZ $fabric_hz ] $s_axis_dac
+    lappend busif_adc m_axis_adc$ch
+    lappend busif_dac s_axis_dac$ch
+  }
   set clk_adc2 [ create_bd_port -dir O -type clk clk_adc2 ]
-  set_property -dict [ list CONFIG.ASSOCIATED_BUSIF {m_axis_adc} CONFIG.FREQ_HZ {307200000} ] $clk_adc2
+  set_property -dict [ list CONFIG.ASSOCIATED_BUSIF [join $busif_adc :] CONFIG.FREQ_HZ $fabric_hz ] $clk_adc2
   set clk_dac2 [ create_bd_port -dir O -type clk clk_dac2 ]
-  set_property -dict [ list CONFIG.ASSOCIATED_BUSIF {s_axis_dac} CONFIG.FREQ_HZ {307200000} ] $clk_dac2
+  set_property -dict [ list CONFIG.ASSOCIATED_BUSIF [join $busif_dac :] CONFIG.FREQ_HZ $fabric_hz ] $clk_dac2
 
   # Converter
   set rfdc [ create_bd_cell -type ip -vlnv xilinx.com:ip:usp_rf_data_converter:2.6 rfdc ]
-  set_property -dict [ list \
-    CONFIG.Axiclk_Freq $cnfg(aclk_f) \
-    CONFIG.ADC0_Enable {0} \
-    CONFIG.ADC_Slice00_Enable {false} \
-    CONFIG.ADC2_Enable {1} \
-    CONFIG.ADC2_PLL_Enable {true} \
-    CONFIG.ADC2_Refclk_Freq {245.760} \
-    CONFIG.ADC2_Sampling_Rate {2.4576} \
-    CONFIG.ADC2_Fabric_Freq {307.200} \
-    CONFIG.ADC2_Outclk_Freq {307.200} \
-    CONFIG.ADC_Slice20_Enable {true} \
-    CONFIG.ADC_Data_Type20 {0} \
-    CONFIG.ADC_Data_Width20 {8} \
-    CONFIG.ADC_Decimation_Mode20 {1} \
-    CONFIG.ADC_Mixer_Type20 {1} \
-    CONFIG.DAC2_Enable {1} \
-    CONFIG.DAC2_PLL_Enable {true} \
-    CONFIG.DAC2_Refclk_Freq {245.760} \
-    CONFIG.DAC2_Sampling_Rate {2.4576} \
-    CONFIG.DAC2_Fabric_Freq {307.200} \
-    CONFIG.DAC2_Outclk_Freq {307.200} \
-    CONFIG.DAC_Slice20_Enable {true} \
-    CONFIG.DAC_Data_Type20 {0} \
-    CONFIG.DAC_Data_Width20 {8} \
-    CONFIG.DAC_Interpolation_Mode20 {1} \
-    CONFIG.DAC_Mixer_Type20 {1} \
-  ] $rfdc
+  set rf_config [ list CONFIG.Axiclk_Freq $cnfg(aclk_f) CONFIG.ADC0_Enable {0} CONFIG.ADC_Slice00_Enable {false} ]
+  foreach t {2 3} {
+    foreach {dir rate} {ADC Decimation DAC Interpolation} {
+      lappend rf_config CONFIG.${dir}${t}_Enable {1} CONFIG.${dir}${t}_PLL_Enable {true} CONFIG.${dir}${t}_Refclk_Freq {245.760} \
+        CONFIG.${dir}${t}_Sampling_Rate $rate_ghz CONFIG.${dir}${t}_Fabric_Freq $fabric_mhz CONFIG.${dir}${t}_Outclk_Freq $fabric_mhz
+      foreach b {0 2} {
+        lappend rf_config CONFIG.${dir}_Slice${t}${b}_Enable {true} CONFIG.${dir}_Data_Type${t}${b} {0} CONFIG.${dir}_Data_Width${t}${b} {8} \
+          CONFIG.${dir}_${rate}_Mode${t}${b} {1} CONFIG.${dir}_Mixer_Type${t}${b} {1}
+      }
+    }
+  }
+  # Tile 3 takes its reference clock from tile 2
+  lappend rf_config CONFIG.ADC3_Clock_Source {2} CONFIG.ADC2_Clock_Dist {1} CONFIG.DAC3_Clock_Source {6} CONFIG.DAC2_Clock_Dist {1}
+  set_property -dict $rf_config $rfdc
 
   # Fabric resets; the tile clocks only run once the clock chips are programmed
   create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_adc2
@@ -108,19 +106,23 @@ proc cr_bd_design_rf { parentCell } {
   connect_bd_intf_net [get_bd_intf_ports adc2_clk] [get_bd_intf_pins rfdc/adc2_clk]
   connect_bd_intf_net [get_bd_intf_ports dac2_clk] [get_bd_intf_pins rfdc/dac2_clk]
   connect_bd_intf_net [get_bd_intf_ports sysref_in] [get_bd_intf_pins rfdc/sysref_in]
-  connect_bd_intf_net [get_bd_intf_ports vin20] [get_bd_intf_pins rfdc/vin20]
-  connect_bd_intf_net [get_bd_intf_ports vout20] [get_bd_intf_pins rfdc/vout20]
+  foreach b {20 22 30 32} {
+    connect_bd_intf_net [get_bd_intf_ports vin$b] [get_bd_intf_pins rfdc/vin$b]
+    connect_bd_intf_net [get_bd_intf_ports vout$b] [get_bd_intf_pins rfdc/vout$b]
+  }
 
   # Clocks and resets
   connect_bd_net [get_bd_ports aclk] [get_bd_pins rfdc/s_axi_aclk]
   connect_bd_net [get_bd_ports aresetn] [get_bd_pins rfdc/s_axi_aresetn] [get_bd_pins rst_adc2/ext_reset_in] [get_bd_pins rst_dac2/ext_reset_in]
-  connect_bd_net [get_bd_pins rfdc/clk_adc2] [get_bd_pins rfdc/m2_axis_aclk] [get_bd_pins rst_adc2/slowest_sync_clk]
-  connect_bd_net [get_bd_pins rfdc/clk_dac2] [get_bd_pins rfdc/s2_axis_aclk] [get_bd_pins rst_dac2/slowest_sync_clk]
-  connect_bd_net [get_bd_pins rst_adc2/peripheral_aresetn] [get_bd_pins rfdc/m2_axis_aresetn]
-  connect_bd_net [get_bd_pins rst_dac2/peripheral_aresetn] [get_bd_pins rfdc/s2_axis_aresetn]
+  connect_bd_net [get_bd_pins rfdc/clk_adc2] [get_bd_pins rfdc/m2_axis_aclk] [get_bd_pins rfdc/m3_axis_aclk] [get_bd_pins rst_adc2/slowest_sync_clk]
+  connect_bd_net [get_bd_pins rfdc/clk_dac2] [get_bd_pins rfdc/s2_axis_aclk] [get_bd_pins rfdc/s3_axis_aclk] [get_bd_pins rst_dac2/slowest_sync_clk]
+  connect_bd_net [get_bd_pins rst_adc2/peripheral_aresetn] [get_bd_pins rfdc/m2_axis_aresetn] [get_bd_pins rfdc/m3_axis_aresetn]
+  connect_bd_net [get_bd_pins rst_dac2/peripheral_aresetn] [get_bd_pins rfdc/s2_axis_aresetn] [get_bd_pins rfdc/s3_axis_aresetn]
   # Converter streams and their clocks, to rf_service in the shell
-  connect_bd_intf_net [get_bd_intf_ports m_axis_adc] [get_bd_intf_pins rfdc/m20_axis]
-  connect_bd_intf_net [get_bd_intf_ports s_axis_dac] [get_bd_intf_pins rfdc/s20_axis]
+  foreach ch {0 1 2 3} b {20 22 30 32} {
+    connect_bd_intf_net [get_bd_intf_ports m_axis_adc$ch] [get_bd_intf_pins rfdc/m${b}_axis]
+    connect_bd_intf_net [get_bd_intf_ports s_axis_dac$ch] [get_bd_intf_pins rfdc/s${b}_axis]
+  }
   connect_bd_net [get_bd_pins rfdc/clk_adc2] [get_bd_ports clk_adc2]
   connect_bd_net [get_bd_pins rfdc/clk_dac2] [get_bd_ports clk_dac2]
 

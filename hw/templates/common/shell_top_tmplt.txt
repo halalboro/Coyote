@@ -195,6 +195,18 @@ module shell_top (
     (* io_buffer_type = "none" *) input  logic                                   dac2_clk_n,
     (* io_buffer_type = "none" *) input  logic                                   sysref_in_p,
     (* io_buffer_type = "none" *) input  logic                                   sysref_in_n,
+    (* io_buffer_type = "none" *) input  logic                                   vin22_p,
+    (* io_buffer_type = "none" *) input  logic                                   vin22_n,
+    (* io_buffer_type = "none" *) output logic                                   vout22_p,
+    (* io_buffer_type = "none" *) output logic                                   vout22_n,
+    (* io_buffer_type = "none" *) input  logic                                   vin30_p,
+    (* io_buffer_type = "none" *) input  logic                                   vin30_n,
+    (* io_buffer_type = "none" *) output logic                                   vout30_p,
+    (* io_buffer_type = "none" *) output logic                                   vout30_n,
+    (* io_buffer_type = "none" *) input  logic                                   vin32_p,
+    (* io_buffer_type = "none" *) input  logic                                   vin32_n,
+    (* io_buffer_type = "none" *) output logic                                   vout32_p,
+    (* io_buffer_type = "none" *) output logic                                   vout32_n,
     (* io_buffer_type = "none" *) input  logic                                   vin20_p,
     (* io_buffer_type = "none" *) input  logic                                   vin20_n,
     (* io_buffer_type = "none" *) output logic                                   vout20_p,
@@ -942,8 +954,8 @@ module shell_top (
     // ================-----------------------------------------------------------------
 
     logic         rf_adc_clk, rf_dac_clk;
-    logic [127:0] rf_adc_tdata, rf_dac_tdata;
-    logic         rf_adc_tvalid, rf_adc_tready, rf_dac_tvalid, rf_dac_tready;
+    logic [3:0][127:0] rf_adc_tdata, rf_dac_tdata;
+    logic [3:0]        rf_adc_tvalid, rf_adc_tready, rf_dac_tvalid, rf_dac_tready;
     AXI4S axis_rf_adc_s0 ();
     AXI4S axis_rf_dac_s0 ();
 
@@ -973,21 +985,51 @@ module shell_top (
         .dac2_clk_clk_n(dac2_clk_n),
         .sysref_in_diff_p(sysref_in_p),
         .sysref_in_diff_n(sysref_in_n),
+        .vin22_v_p(vin22_p),
+        .vin22_v_n(vin22_n),
+        .vout22_v_p(vout22_p),
+        .vout22_v_n(vout22_n),
+        .vin30_v_p(vin30_p),
+        .vin30_v_n(vin30_n),
+        .vout30_v_p(vout30_p),
+        .vout30_v_n(vout30_n),
+        .vin32_v_p(vin32_p),
+        .vin32_v_n(vin32_n),
+        .vout32_v_p(vout32_p),
+        .vout32_v_n(vout32_n),
         .vin20_v_p(vin20_p),
         .vin20_v_n(vin20_n),
         .vout20_v_p(vout20_p),
         .vout20_v_n(vout20_n),
         .clk_adc2(rf_adc_clk),
         .clk_dac2(rf_dac_clk),
-        .m_axis_adc_tdata(rf_adc_tdata),
-        .m_axis_adc_tvalid(rf_adc_tvalid),
-        .m_axis_adc_tready(rf_adc_tready),
-        .s_axis_dac_tdata(rf_dac_tdata),
-        .s_axis_dac_tvalid(rf_dac_tvalid),
-        .s_axis_dac_tready(rf_dac_tready)
+        .m_axis_adc0_tdata(rf_adc_tdata[0]),
+        .m_axis_adc0_tvalid(rf_adc_tvalid[0]),
+        .m_axis_adc0_tready(rf_adc_tready[0]),
+        .s_axis_dac0_tdata(rf_dac_tdata[0]),
+        .s_axis_dac0_tvalid(rf_dac_tvalid[0]),
+        .s_axis_dac0_tready(rf_dac_tready[0]),
+        .m_axis_adc1_tdata(rf_adc_tdata[1]),
+        .m_axis_adc1_tvalid(rf_adc_tvalid[1]),
+        .m_axis_adc1_tready(rf_adc_tready[1]),
+        .s_axis_dac1_tdata(rf_dac_tdata[1]),
+        .s_axis_dac1_tvalid(rf_dac_tvalid[1]),
+        .s_axis_dac1_tready(rf_dac_tready[1]),
+        .m_axis_adc2_tdata(rf_adc_tdata[2]),
+        .m_axis_adc2_tvalid(rf_adc_tvalid[2]),
+        .m_axis_adc2_tready(rf_adc_tready[2]),
+        .s_axis_dac2_tdata(rf_dac_tdata[2]),
+        .s_axis_dac2_tvalid(rf_dac_tvalid[2]),
+        .s_axis_dac2_tready(rf_dac_tready[2]),
+        .m_axis_adc3_tdata(rf_adc_tdata[3]),
+        .m_axis_adc3_tvalid(rf_adc_tvalid[3]),
+        .m_axis_adc3_tready(rf_adc_tready[3]),
+        .s_axis_dac3_tdata(rf_dac_tdata[3]),
+        .s_axis_dac3_tvalid(rf_dac_tvalid[3]),
+        .s_axis_dac3_tready(rf_dac_tready[3])
     );
 
-    rf_service inst_rf_service (
+    rf_service #(.RATE_KHZ({{ cnfg.rf_rate_khz }})) inst_rf_service (
         .aclk(aclk),
         .aresetn(aresetn),
         .s_axi_cnfg(axi_rf_cnfg),

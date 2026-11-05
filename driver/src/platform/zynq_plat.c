@@ -224,20 +224,12 @@ void shell_pci_remove(struct bus_driver_data *bd_data) {
 }
 
 /*
- * Shuts the RF DAC tile down, so that a DAC only ever runs when software asks for it.
- * The tile's state machine is left to finish its start-up first, at most about 200 ms.
+ * Shuts one RF DAC tile down. The tile's state machine is left to finish its start-up first, at most about 200 ms.
  */
-static void rf_dac_off(struct device *dev, struct bus_driver_data *bd_data) {
-    void __iomem *rf = ioremap(bd_data->bar_phys_addr[BAR_SHELL_CONFIG] + RF_CONV_OFFS, RF_CONV_SIZE);
-    void __iomem *tile;
+static void rf_dac_tile_off(struct device *dev, void __iomem *rf, int tile_num) {
+    void __iomem *tile = rf + RF_DAC_TILE_OFFS(tile_num);
     u32 state;
     int i;
-
-    if (!rf) {
-        dev_err(dev, "could not map the RF converter registers; the DAC tile may be running\n");
-        return;
-    }
-    tile = rf + RF_DAC_TILE_OFFS(RF_DAC_TILE);
 
     for (i = 0; i < 200; i++) {
         state = ioread32(tile + RF_TILE_CURRENT_STATE_OFFS);
@@ -260,9 +252,28 @@ static void rf_dac_off(struct device *dev, struct bus_driver_data *bd_data) {
     }
 
     if (state == RF_TILE_STATE_OFF) {
-        dev_info(dev, "RF DAC tile %d is off\n", RF_DAC_TILE);
+        dev_info(dev, "RF DAC tile %d is off\n", tile_num);
     } else {
-        dev_err(dev, "RF DAC tile %d did not shut down, state %u\n", RF_DAC_TILE, state);
+        dev_err(dev, "RF DAC tile %d did not shut down, state %u\n", tile_num, state);
+    }
+}
+
+/*
+ * Shuts the RF DAC tiles down, so that a DAC only ever runs when software asks for it. The tile that passes
+ * on the reference clock goes last.
+ */
+static void rf_dac_off(struct device *dev, struct bus_driver_data *bd_data) {
+    void __iomem *rf = ioremap(bd_data->bar_phys_addr[BAR_SHELL_CONFIG] + RF_CONV_OFFS, RF_WINDOW_SIZE);
+    int t;
+
+    if (!rf) {
+        dev_err(dev, "could not map the RF converter registers; the DAC tiles may be running\n");
+        return;
+    }
+
+    t = ioread32(rf + RF_SERVICE_OFFS + RF_SERVICE_CHANNELS_OFFS) ? RF_DAC_TILE_LAST : RF_DAC_TILE;
+    for (; t >= RF_DAC_TILE; t--) {
+        rf_dac_tile_off(dev, rf, t);
     }
     iounmap(rf);
 }
